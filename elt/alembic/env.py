@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from alembic import context
 from sqlalchemy import create_engine
 
+from alembic import context
 from dxb.config import get_settings
 from dxb.db.models import Base
 

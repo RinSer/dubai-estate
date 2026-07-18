@@ -1,4 +1,5 @@
 """Unit tests for dxb.collectors.client.DldClient (request tier)."""
+
 from __future__ import annotations
 
 import threading
@@ -6,11 +7,10 @@ import time
 
 import httpx
 import pytest
+from conftest import gateway_transport, request_json
 from tenacity import wait_none
 
 from dxb.collectors.client import DldClient, DldError
-
-from conftest import gateway_transport, request_json
 
 
 @pytest.fixture(autouse=True)
@@ -24,15 +24,19 @@ def no_retry_wait():
 
 # ---------------------------------------------------------------- pages()
 
+
 def test_pages_stops_on_short_page():
     """page_size=2, TOTAL=5 -> pages of 2,2,1 (last short) then stop."""
+
     def handler(request):
         skip = int(request_json(request)["P_SKIP"])
         remaining = max(0, 5 - skip)
         n = min(2, remaining)
         return [{"TOTAL": 5, "N": skip + i} for i in range(n)]
 
-    client = DldClient(page_size=2, throttle_seconds=0, transport=gateway_transport(handler))
+    client = DldClient(
+        page_size=2, throttle_seconds=0, transport=gateway_transport(handler)
+    )
     pages = list(client.pages("transactions", {}))
 
     assert len(pages) == 3
@@ -45,12 +49,15 @@ def test_pages_stops_on_short_page():
 
 def test_pages_stops_when_total_reached_on_full_page():
     """TOTAL=4, page_size=2 -> two full pages then stop (skip >= total)."""
+
     def handler(request):
         skip = int(request_json(request)["P_SKIP"])
         n = min(2, max(0, 4 - skip))
         return [{"TOTAL": 4, "N": skip + i} for i in range(n)]
 
-    client = DldClient(page_size=2, throttle_seconds=0, transport=gateway_transport(handler))
+    client = DldClient(
+        page_size=2, throttle_seconds=0, transport=gateway_transport(handler)
+    )
     pages = list(client.pages("rents", {}))
 
     assert [req["P_SKIP"] for req, _ in pages] == ["0", "2"]
@@ -58,12 +65,14 @@ def test_pages_stops_when_total_reached_on_full_page():
 
 
 def test_pages_empty_first_page_yields_nothing():
-    client = DldClient(page_size=2, throttle_seconds=0,
-                       transport=gateway_transport(lambda r: []))
+    client = DldClient(
+        page_size=2, throttle_seconds=0, transport=gateway_transport(lambda r: [])
+    )
     assert list(client.pages("transactions", {})) == []
 
 
 # ------------------------------------------------------ pages() concurrent
+
 
 def test_pages_concurrent_respects_cap_and_fetches_everything():
     """max_concurrency > 1: the first page is always fetched alone (to learn
@@ -85,7 +94,9 @@ def test_pages_concurrent_respects_cap_and_fetches_everything():
         return [{"TOTAL": total, "N": skip + i} for i in range(n)]
 
     client = DldClient(
-        page_size=page_size, throttle_seconds=0, max_concurrency=max_concurrency,
+        page_size=page_size,
+        throttle_seconds=0,
+        max_concurrency=max_concurrency,
         transport=gateway_transport(handler),
     )
     pages = list(client.pages("rents", {}))
@@ -98,6 +109,7 @@ def test_pages_concurrent_respects_cap_and_fetches_everything():
 def test_pages_concurrent_propagates_page_error():
     """A page that exhausts retries must surface as DldError even when other
     pages are fetching concurrently, not get silently swallowed."""
+
     def handler(request):
         skip = int(request_json(request)["P_SKIP"])
         if skip == 0:
@@ -107,7 +119,9 @@ def test_pages_concurrent_propagates_page_error():
         return [{"TOTAL": 6, "N": skip}, {"TOTAL": 6, "N": skip + 1}]
 
     client = DldClient(
-        page_size=2, throttle_seconds=0, max_concurrency=2,
+        page_size=2,
+        throttle_seconds=0,
+        max_concurrency=2,
         transport=gateway_transport(handler),
     )
     with pytest.raises(DldError):
@@ -127,7 +141,9 @@ def test_pages_preserves_base_payload_fields():
         seen.append(request_json(request))
         return []  # stop immediately
 
-    client = DldClient(page_size=2, throttle_seconds=0, transport=gateway_transport(handler))
+    client = DldClient(
+        page_size=2, throttle_seconds=0, transport=gateway_transport(handler)
+    )
     list(client.pages("transactions", {"P_SORT": "X", "P_AREA_ID": "7"}))
 
     assert seen[0]["P_SORT"] == "X"
@@ -137,9 +153,11 @@ def test_pages_preserves_base_payload_fields():
 
 # ----------------------------------------------------------------- post()
 
+
 def test_post_returns_result_rows():
-    client = DldClient(throttle_seconds=0,
-                       transport=gateway_transport(lambda r: [{"A": 1}, {"A": 2}]))
+    client = DldClient(
+        throttle_seconds=0, transport=gateway_transport(lambda r: [{"A": 1}, {"A": 2}])
+    )
     assert client.post("transactions", {}) == [{"A": 1}, {"A": 2}]
 
 
@@ -162,8 +180,9 @@ def test_post_raises_on_http_500():
 
 def test_post_raises_on_non_json_html():
     def handler(request):
-        return httpx.Response(200, text="<html>error page</html>",
-                              headers={"content-type": "text/html"})
+        return httpx.Response(
+            200, text="<html>error page</html>", headers={"content-type": "text/html"}
+        )
 
     client = DldClient(throttle_seconds=0, transport=gateway_transport(handler))
     with pytest.raises(DldError, match="non-JSON"):

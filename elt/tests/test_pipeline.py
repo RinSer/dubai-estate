@@ -3,6 +3,7 @@
 run_pipeline itself is patched out; get_session is replaced by an in-memory
 fake, and tenacity waits are zeroed via env so tests are instant.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -33,8 +34,8 @@ def test_succeeds_after_two_failures(monkeypatch, mocker, fake_session_store):
     assert run_pipeline.call_count == 3
     notify_failure.assert_not_called()
     notify_success.assert_called_once()
-    assert notify_success.call_args[0][0] == report      # report
-    assert notify_success.call_args[0][1] == 3           # attempts
+    assert notify_success.call_args[0][0] == report  # report
+    assert notify_success.call_args[0][1] == 3  # attempts
 
     run = fake_session_store.store[1]
     assert run.status == "ok"
@@ -58,7 +59,10 @@ def test_fails_after_exhausting_attempts(monkeypatch, mocker, fake_session_store
     assert run_pipeline.call_count == 2
     notify_success.assert_not_called()
     notify_failure.assert_called_once()
-    error_text, attempts = notify_failure.call_args[0][0], notify_failure.call_args[0][1]
+    error_text, attempts = (
+        notify_failure.call_args[0][0],
+        notify_failure.call_args[0][1],
+    )
     assert attempts == 2
     assert "boom" in error_text
 

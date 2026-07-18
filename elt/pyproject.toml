@@ -29,6 +29,7 @@ dev = [
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",
+    "ruff>=0.15.22",
 ]
 
 [build-system]
@@ -40,3 +41,6 @@ packages = ["src/dxb"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+lint.select = ["E", "I"]

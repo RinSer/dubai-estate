@@ -3,6 +3,7 @@
 Send failures are logged and swallowed — alerting must never take down the
 pipeline; etl_run is the durable audit trail either way.
 """
+
 from __future__ import annotations
 
 import json
@@ -39,7 +40,9 @@ def send_email(subject: str, body: str, settings: Settings | None = None) -> boo
         return False
 
 
-def notify_success(report: dict, attempts: int, settings: Settings | None = None) -> bool:
+def notify_success(
+    report: dict, attempts: int, settings: Settings | None = None
+) -> bool:
     body = (
         f"Daily dxb pipeline finished successfully (attempt {attempts}).\n\n"
         f"Run report:\n{json.dumps(report, indent=2, default=str)}\n"
@@ -47,9 +50,7 @@ def notify_success(report: dict, attempts: int, settings: Settings | None = None
     return send_email("[dxb] daily run OK", body, settings)
 
 
-def notify_failure(
-    error: str, attempts: int, settings: Settings | None = None
-) -> bool:
+def notify_failure(error: str, attempts: int, settings: Settings | None = None) -> bool:
     body = (
         f"Daily dxb pipeline FAILED after {attempts} attempt(s).\n\n"
         f"Last error / traceback:\n{error}\n\n"

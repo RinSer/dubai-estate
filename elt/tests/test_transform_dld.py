@@ -1,5 +1,6 @@
 """Unit tests for dxb.transform.dld: coercion utils, fact value builders,
 and the natural-key batch dedupe in _upsert_facts."""
+
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -7,11 +8,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-
-from dxb.transform import dld as tr
-from dxb.db.models import FactSaleTransaction
-
 from conftest import StubCaches, insert_value_rows
+
+from dxb.db.models import FactSaleTransaction
+from dxb.transform import dld as tr
 
 
 def stg(payload: dict, source_id: int = 1):
@@ -20,49 +20,81 @@ def stg(payload: dict, source_id: int = 1):
 
 # ------------------------------------------------------------- norm_name
 
-@pytest.mark.parametrize("value,expected", [
-    (None, None),
-    ("", None),
-    ("   ", None),
-    ("  hello   world ", "HELLO WORLD"),
-    ("Villa", "VILLA"),
-])
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("  hello   world ", "HELLO WORLD"),
+        ("Villa", "VILLA"),
+    ],
+)
 def test_norm_name(value, expected):
     assert tr.norm_name(value) == expected
 
 
 # -------------------------------------------------------------- to_float
 
-@pytest.mark.parametrize("value,expected", [
-    (None, None), ("", None), ("abc", None),
-    ("1.5", 1.5), (3, 3.0), (2.5, 2.5),
-])
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (None, None),
+        ("", None),
+        ("abc", None),
+        ("1.5", 1.5),
+        (3, 3.0),
+        (2.5, 2.5),
+    ],
+)
 def test_to_float(value, expected):
     assert tr.to_float(value) == expected
 
 
 # ---------------------------------------------------------------- to_int
 
-@pytest.mark.parametrize("value,expected", [
-    (None, None), ("", None), ("abc", None),
-    ("1", 1), (1.9, 1), (2, 2),
-])
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (None, None),
+        ("", None),
+        ("abc", None),
+        ("1", 1),
+        (1.9, 1),
+        (2, 2),
+    ],
+)
 def test_to_int(value, expected):
     assert tr.to_int(value) == expected
 
 
 # --------------------------------------------------------------- to_bool
 
-@pytest.mark.parametrize("value,expected", [
-    (None, None), ("", None),
-    ("1", True), (1, True), (True, True), ("true", True), ("True", True),
-    ("0", False), ("false", False), ("no", False),
-])
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (None, None),
+        ("", None),
+        ("1", True),
+        (1, True),
+        (True, True),
+        ("true", True),
+        ("True", True),
+        ("0", False),
+        ("false", False),
+        ("no", False),
+    ],
+)
 def test_to_bool(value, expected):
     assert tr.to_bool(value) is expected
 
 
 # --------------------------------------------------------------- to_date
+
 
 def test_to_date():
     assert tr.to_date(None) is None
@@ -73,15 +105,23 @@ def test_to_date():
 
 # --------------------------------------------------------------- to_text
 
-@pytest.mark.parametrize("value,expected", [
-    (None, None), ("", None), ("   ", None),
-    ("  x  ", "x"), (5, "5"),
-])
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("  x  ", "x"),
+        (5, "5"),
+    ],
+)
 def test_to_text(value, expected):
     assert tr.to_text(value) == expected
 
 
 # ------------------------------------------------------------ _sale_values
+
 
 def _sale_payload(**overrides) -> dict:
     base = {
@@ -151,6 +191,7 @@ def test_sale_values_none_when_area_unresolved():
 
 # ------------------------------------------------------------ _rent_values
 
+
 def _rent_payload(**overrides) -> dict:
     base = {
         "REGISTRATION_DATE": "2024-06-01",
@@ -206,13 +247,25 @@ def test_rent_values_none_when_area_unresolved():
 
 # ------------------------------------------------------------ _upsert_facts
 
+
 def _sale_row(txn_number, amount, area_m2=10):
     return {
-        "source_id": 1, "txn_number": txn_number, "txn_date": datetime(2024, 1, 1),
-        "actual_area_m2": area_m2, "amount_aed": amount, "source_ref": txn_number,
-        "txn_group": "Sales", "procedure_name": None, "is_offplan": False,
-        "is_freehold": False, "property_type_id": None, "rooms": None,
-        "parking": None, "area_id": 1, "project_id": None, "parcel_id": None,
+        "source_id": 1,
+        "txn_number": txn_number,
+        "txn_date": datetime(2024, 1, 1),
+        "actual_area_m2": area_m2,
+        "amount_aed": amount,
+        "source_ref": txn_number,
+        "txn_group": "Sales",
+        "procedure_name": None,
+        "is_offplan": False,
+        "is_freehold": False,
+        "property_type_id": None,
+        "rooms": None,
+        "parking": None,
+        "area_id": 1,
+        "project_id": None,
+        "parcel_id": None,
     }
 
 
@@ -222,9 +275,12 @@ def test_upsert_facts_dedupes_on_natural_key_last_wins():
     values = [_sale_row("A", 100), _sale_row("A", 999)]  # same natural key
 
     tr._upsert_facts(
-        session, FactSaleTransaction.__table__, "ux_sale_natural",
+        session,
+        FactSaleTransaction.__table__,
+        "ux_sale_natural",
         ["source_id", "txn_number", "txn_date", "actual_area_m2"],
-        tr._SALE_UPDATE_COLS, values,
+        tr._SALE_UPDATE_COLS,
+        values,
     )
 
     rows = insert_value_rows(session.execute.call_args[0][0])
@@ -238,17 +294,29 @@ def test_upsert_facts_keeps_distinct_keys():
     values = [_sale_row("A", 100), _sale_row("B", 200)]
 
     tr._upsert_facts(
-        session, FactSaleTransaction.__table__, "ux_sale_natural",
+        session,
+        FactSaleTransaction.__table__,
+        "ux_sale_natural",
         ["source_id", "txn_number", "txn_date", "actual_area_m2"],
-        tr._SALE_UPDATE_COLS, values,
+        tr._SALE_UPDATE_COLS,
+        values,
     )
     assert len(insert_value_rows(session.execute.call_args[0][0])) == 2
 
 
 def test_upsert_facts_empty_returns_zero():
     session = MagicMock()
-    assert tr._upsert_facts(session, FactSaleTransaction.__table__, "ux_sale_natural",
-                            ["txn_number"], tr._SALE_UPDATE_COLS, []) == 0
+    assert (
+        tr._upsert_facts(
+            session,
+            FactSaleTransaction.__table__,
+            "ux_sale_natural",
+            ["txn_number"],
+            tr._SALE_UPDATE_COLS,
+            [],
+        )
+        == 0
+    )
     session.execute.assert_not_called()
 
 
@@ -263,9 +331,12 @@ def test_upsert_facts_written_count_comes_from_returning_not_rowcount():
     values = [_sale_row("A", 100), _sale_row("B", 200)]
 
     written = tr._upsert_facts(
-        session, FactSaleTransaction.__table__, "ux_sale_natural",
+        session,
+        FactSaleTransaction.__table__,
+        "ux_sale_natural",
         ["source_id", "txn_number", "txn_date", "actual_area_m2"],
-        tr._SALE_UPDATE_COLS, values,
+        tr._SALE_UPDATE_COLS,
+        values,
     )
 
     assert written == 2  # from RETURNING, not from the bogus rowcount=-1
@@ -276,15 +347,20 @@ def test_upsert_facts_chunks_when_batch_exceeds_bind_param_limit(monkeypatch):
     5000-row batch of wide sale-fact rows hit Postgres's 65535-bind-parameter
     hard limit (OperationalError: number of parameters must be...). Verify
     _upsert_facts splits into multiple statements, each within budget."""
-    monkeypatch.setattr(tr, "_MAX_BIND_PARAMS", 32)  # sale row has 16 cols -> chunk_size 2
+    monkeypatch.setattr(
+        tr, "_MAX_BIND_PARAMS", 32
+    )  # sale row has 16 cols -> chunk_size 2
     session = MagicMock()
     session.execute.return_value.fetchall.return_value = [(1,), (2,)]
     rows = [_sale_row(f"T{i}", 100 + i) for i in range(4)]  # 4 distinct natural keys
 
     written = tr._upsert_facts(
-        session, FactSaleTransaction.__table__, "ux_sale_natural",
+        session,
+        FactSaleTransaction.__table__,
+        "ux_sale_natural",
         ["source_id", "txn_number", "txn_date", "actual_area_m2"],
-        tr._SALE_UPDATE_COLS, rows,
+        tr._SALE_UPDATE_COLS,
+        rows,
     )
 
     assert session.execute.call_count == 2  # 4 rows split into chunks of 2
@@ -304,9 +380,12 @@ def test_upsert_facts_respects_real_bind_param_limit():
     rows = [_sale_row(f"T{i}", i) for i in range(chunk_size + 1)]  # forces 2 chunks
 
     tr._upsert_facts(
-        session, FactSaleTransaction.__table__, "ux_sale_natural",
+        session,
+        FactSaleTransaction.__table__,
+        "ux_sale_natural",
         ["source_id", "txn_number", "txn_date", "actual_area_m2"],
-        tr._SALE_UPDATE_COLS, rows,
+        tr._SALE_UPDATE_COLS,
+        rows,
     )
 
     assert session.execute.call_count == 2

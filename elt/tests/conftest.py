@@ -3,6 +3,7 @@
 Unit tests only: no real network, no real database. External systems are
 mocked/stubbed everywhere.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,12 +23,27 @@ from dxb.config import Settings
 # reproducibly. Clear them all before every test; individual tests then
 # opt in to specific values via monkeypatch.setenv as needed.
 _DXB_ENV_VARS = [
-    "DXB_DB_HOST", "DXB_DB_PORT", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB",
-    "DXB_PAGE_SIZE", "DXB_THROTTLE_SECONDS", "DXB_MAX_CONCURRENCY", "DXB_SOURCE_URL",
-    "DXB_SCHEDULE_HOUR", "DXB_SCHEDULE_MINUTE",
-    "DXB_JOB_ATTEMPTS", "DXB_JOB_WAIT_MIN_SECONDS", "DXB_JOB_WAIT_MAX_SECONDS",
-    "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_STARTTLS",
-    "ALERT_TO", "ALERT_FROM",
+    "DXB_DB_HOST",
+    "DXB_DB_PORT",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_DB",
+    "DXB_PAGE_SIZE",
+    "DXB_THROTTLE_SECONDS",
+    "DXB_MAX_CONCURRENCY",
+    "DXB_SOURCE_URL",
+    "DXB_SCHEDULE_HOUR",
+    "DXB_SCHEDULE_MINUTE",
+    "DXB_JOB_ATTEMPTS",
+    "DXB_JOB_WAIT_MIN_SECONDS",
+    "DXB_JOB_WAIT_MAX_SECONDS",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USER",
+    "SMTP_PASSWORD",
+    "SMTP_STARTTLS",
+    "ALERT_TO",
+    "ALERT_FROM",
 ]
 
 
@@ -76,6 +92,7 @@ def settings_factory():
 
 # ----------------------------------------------------- insert introspection
 
+
 def insert_value_rows(stmt) -> list[dict]:
     """Return the list of value dicts embedded in a (multi-row) pg_insert.
 
@@ -88,6 +105,7 @@ def insert_value_rows(stmt) -> list[dict]:
 
 
 # --------------------------------------------------------- httpx mock helper
+
 
 def gateway_transport(handler) -> httpx.MockTransport:
     """Wrap a handler(request) -> (rows list | (rows, response_code) | Response)
@@ -114,6 +132,7 @@ def request_json(request: httpx.Request) -> dict:
 
 # ----------------------------------------------------------- stub dim caches
 
+
 class StubCaches:
     """Minimal stand-in for transform.dld.DimCaches.
 
@@ -121,8 +140,13 @@ class StubCaches:
     the mapping. ``area_id=None`` simulates an unresolved area (drops a fact).
     """
 
-    def __init__(self, area_id: int | None = 10, ptype_id: int | None = 20,
-                 project_id: int | None = 30, developer_id: int | None = 40) -> None:
+    def __init__(
+        self,
+        area_id: int | None = 10,
+        ptype_id: int | None = 20,
+        project_id: int | None = 30,
+        developer_id: int | None = 40,
+    ) -> None:
         self._area_id = area_id
         self._ptype_id = ptype_id
         self._project_id = project_id
@@ -139,8 +163,9 @@ class StubCaches:
         self.ptype_calls.append((usage, prop_type, subtype))
         return self._ptype_id
 
-    def project(self, name, *, is_master=False, master_name=None, area_id=None,
-                name_ar=None):
+    def project(
+        self, name, *, is_master=False, master_name=None, area_id=None, name_ar=None
+    ):
         self.project_calls.append((name, master_name, area_id))
         return self._project_id
 
@@ -154,6 +179,7 @@ def stub_caches():
 
 
 # ------------------------------------------------ fake session for pipeline
+
 
 class FakeSession:
     """Context-manager session backed by a shared store.

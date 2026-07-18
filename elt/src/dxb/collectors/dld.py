@@ -3,6 +3,7 @@
 Windows are calendar months; the watermark advances after each completed
 window, so an interrupted backfill resumes where it stopped.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -21,12 +22,22 @@ log = logging.getLogger(__name__)
 # Query metadata that varies between fetches of the same record — must not
 # participate in content hashing (plan §2.1 caveat).
 VOLATILE_FIELDS = {
-    "RN", "TOTAL", "TOTAL_SELLER", "TOTAL_BUYER", "TOTAL_PROPERTIES", "DEFAULT_SORT",
+    "RN",
+    "TOTAL",
+    "TOTAL_SELLER",
+    "TOTAL_BUYER",
+    "TOTAL_PROPERTIES",
+    "DEFAULT_SORT",
 }
 
 PROJECT_STATUSES = [
-    "ACTIVE", "FINISHED", "FRIEZED", "CANCELLED", "UNDER_REVIEWING",
-    "UNDER_CANCELATION_DECISION", "UNDER_CANCELATION_NOTIFICATION",
+    "ACTIVE",
+    "FINISHED",
+    "FRIEZED",
+    "CANCELLED",
+    "UNDER_REVIEWING",
+    "UNDER_CANCELATION_DECISION",
+    "UNDER_CANCELATION_NOTIFICATION",
     "CONDITIONAL_ACTIVATING",
 ]
 
@@ -41,7 +52,9 @@ def clean_row(row: dict) -> dict:
 
 
 def record_hash(endpoint: str, cleaned: dict) -> str:
-    canonical = json.dumps(cleaned, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    canonical = json.dumps(
+        cleaned, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
     return hashlib.sha256(f"{endpoint}|{canonical}".encode()).hexdigest()
 
 
@@ -62,7 +75,11 @@ def month_windows(start: date, end: date) -> list[tuple[date, date]]:
 
 
 def stage_rows(
-    session: Session, source_id: int, endpoint: str, request_payload: dict, rows: list[dict]
+    session: Session,
+    source_id: int,
+    endpoint: str,
+    request_payload: dict,
+    rows: list[dict],
 ) -> int:
     """Insert cleaned rows into staging; hash conflict = identical content = skip.
     Returns the number of newly staged rows."""
@@ -86,7 +103,9 @@ def stage_rows(
         pg_insert(StgRaw.__table__)
         .values(values)
         .on_conflict_do_nothing(index_elements=["record_hash"])
-        .returning(StgRaw.__table__.c.id)  # rowcount is unreliable for multi-VALUES inserts
+        .returning(
+            StgRaw.__table__.c.id
+        )  # rowcount is unreliable for multi-VALUES inserts
     )
     result = session.execute(stmt)
     return len(result.fetchall())
@@ -97,10 +116,14 @@ def get_watermark(session: Session, source_id: int, endpoint: str) -> date | Non
     return wm.last_date if wm else None
 
 
-def set_watermark(session: Session, source_id: int, endpoint: str, last_date: date) -> None:
+def set_watermark(
+    session: Session, source_id: int, endpoint: str, last_date: date
+) -> None:
     wm = session.get(EtlWatermark, (source_id, endpoint))
     if wm is None:
-        session.add(EtlWatermark(source_id=source_id, endpoint=endpoint, last_date=last_date))
+        session.add(
+            EtlWatermark(source_id=source_id, endpoint=endpoint, last_date=last_date)
+        )
     elif wm.last_date < last_date:
         wm.last_date = last_date
         wm.updated_at = datetime.now(timezone.utc)
@@ -159,9 +182,21 @@ def collect_windowed(
             session.commit()
         set_watermark(session, source_id, endpoint, w_to)
         session.commit()
-        log.info("%s %s..%s: fetched=%s staged(new)=%s", endpoint, w_from, w_to, fetched, staged)
-    return {"endpoint": endpoint, "fetched": fetched, "staged": staged,
-            "from": str(d_from), "to": str(d_to)}
+        log.info(
+            "%s %s..%s: fetched=%s staged(new)=%s",
+            endpoint,
+            w_from,
+            w_to,
+            fetched,
+            staged,
+        )
+    return {
+        "endpoint": endpoint,
+        "fetched": fetched,
+        "staged": staged,
+        "from": str(d_from),
+        "to": str(d_to),
+    }
 
 
 def collect_areas(session: Session, client: DldClient, source_id: int) -> dict:
@@ -194,7 +229,9 @@ def collect_projects(session: Session, client: DldClient, source_id: int) -> dic
     return {"endpoint": "projects", "fetched": fetched, "staged": staged}
 
 
-def default_window(session: Session, source_id: int, endpoint: str, overlap_days: int = 2) -> tuple[date, date]:
+def default_window(
+    session: Session, source_id: int, endpoint: str, overlap_days: int = 2
+) -> tuple[date, date]:
     """Daily-run window: [watermark - overlap, today]; first run = last 30 days."""
     today = date.today()
     wm = get_watermark(session, source_id, endpoint)

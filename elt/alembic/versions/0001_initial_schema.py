@@ -4,8 +4,8 @@ Revision ID: 0001
 Revises:
 Create Date: 2026-07-18
 """
-from alembic import op
 
+from alembic import op
 from dxb.db.models import Base
 
 revision = "0001"

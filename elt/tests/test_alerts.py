@@ -1,23 +1,26 @@
 """Unit tests for dxb.alerts (SMTP send is fully mocked)."""
+
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from conftest import make_settings
 
 from dxb import alerts
-
-from conftest import make_settings
 
 
 def test_send_email_skips_when_no_smtp_host(mocker):
     smtp = mocker.patch("smtplib.SMTP")
-    ok = alerts.send_email("subj", "body", make_settings(smtp_host="", alert_to="a@b.c"))
+    ok = alerts.send_email(
+        "subj", "body", make_settings(smtp_host="", alert_to="a@b.c")
+    )
     assert ok is False
     smtp.assert_not_called()
 
 
 def test_send_email_skips_when_no_recipient(mocker):
     smtp = mocker.patch("smtplib.SMTP")
-    ok = alerts.send_email("subj", "body", make_settings(smtp_host="mail.test", alert_to=""))
+    ok = alerts.send_email(
+        "subj", "body", make_settings(smtp_host="mail.test", alert_to="")
+    )
     assert ok is False
     smtp.assert_not_called()
 
@@ -26,8 +29,13 @@ def test_send_email_sends_with_starttls_and_login(mocker):
     smtp_cls = mocker.patch("smtplib.SMTP")
     smtp = smtp_cls.return_value.__enter__.return_value
     settings = make_settings(
-        smtp_host="mail.test", smtp_port=587, smtp_user="u", smtp_password="pw",
-        smtp_starttls=True, alert_to="to@x.com", alert_from="from@x.com",
+        smtp_host="mail.test",
+        smtp_port=587,
+        smtp_user="u",
+        smtp_password="pw",
+        smtp_starttls=True,
+        alert_to="to@x.com",
+        alert_from="from@x.com",
     )
 
     ok = alerts.send_email("subj", "body", settings)
@@ -45,8 +53,9 @@ def test_send_email_sends_with_starttls_and_login(mocker):
 def test_send_email_no_starttls_no_login_when_unconfigured(mocker):
     smtp_cls = mocker.patch("smtplib.SMTP")
     smtp = smtp_cls.return_value.__enter__.return_value
-    settings = make_settings(smtp_host="mail.test", smtp_user="", smtp_starttls=False,
-                             alert_to="to@x.com")
+    settings = make_settings(
+        smtp_host="mail.test", smtp_user="", smtp_starttls=False, alert_to="to@x.com"
+    )
 
     ok = alerts.send_email("s", "b", settings)
 
@@ -58,14 +67,20 @@ def test_send_email_no_starttls_no_login_when_unconfigured(mocker):
 
 def test_send_email_swallows_exceptions(mocker):
     mocker.patch("smtplib.SMTP", side_effect=OSError("connection refused"))
-    ok = alerts.send_email("s", "b", make_settings(smtp_host="mail.test", alert_to="a@b.c"))
+    ok = alerts.send_email(
+        "s", "b", make_settings(smtp_host="mail.test", alert_to="a@b.c")
+    )
     assert ok is False  # no raise
 
 
 def test_send_email_swallows_send_message_error(mocker):
     smtp_cls = mocker.patch("smtplib.SMTP")
-    smtp_cls.return_value.__enter__.return_value.send_message.side_effect = RuntimeError("nope")
-    ok = alerts.send_email("s", "b", make_settings(smtp_host="mail.test", alert_to="a@b.c"))
+    smtp_cls.return_value.__enter__.return_value.send_message.side_effect = (
+        RuntimeError("nope")
+    )
+    ok = alerts.send_email(
+        "s", "b", make_settings(smtp_host="mail.test", alert_to="a@b.c")
+    )
     assert ok is False
 
 

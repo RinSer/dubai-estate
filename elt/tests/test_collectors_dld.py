@@ -1,15 +1,16 @@
 """Unit tests for dxb.collectors.dld pure helpers + stage_rows."""
+
 from __future__ import annotations
 
 from datetime import date
 from unittest.mock import MagicMock
 
-from dxb.collectors import dld
-
 from conftest import insert_value_rows
 
+from dxb.collectors import dld
 
 # ------------------------------------------------------------- fmt_date
+
 
 def test_fmt_date_is_mm_dd_yyyy():
     # Load-bearing: gateway 500s on DD/MM. Day 5 < 12 disambiguates order.
@@ -19,9 +20,16 @@ def test_fmt_date_is_mm_dd_yyyy():
 
 # ------------------------------------------------------------- clean_row
 
+
 def test_clean_row_strips_volatile_fields():
-    row = {"TRANSACTION_NUMBER": "A", "RN": 1, "TOTAL": 500,
-           "TOTAL_SELLER": 2, "DEFAULT_SORT": "x", "KEEP": "yes"}
+    row = {
+        "TRANSACTION_NUMBER": "A",
+        "RN": 1,
+        "TOTAL": 500,
+        "TOTAL_SELLER": 2,
+        "DEFAULT_SORT": "x",
+        "KEEP": "yes",
+    }
     cleaned = dld.clean_row(row)
     assert cleaned == {"TRANSACTION_NUMBER": "A", "KEEP": "yes"}
     for f in dld.VOLATILE_FIELDS:
@@ -29,6 +37,7 @@ def test_clean_row_strips_volatile_fields():
 
 
 # ------------------------------------------------------------ record_hash
+
 
 def test_record_hash_stable_across_dict_ordering():
     a = dld.record_hash("transactions", {"A": 1, "B": 2})
@@ -43,6 +52,7 @@ def test_record_hash_differs_on_payload_and_endpoint():
 
 
 # ----------------------------------------------------------- month_windows
+
 
 def test_month_windows_single_day():
     assert dld.month_windows(date(2024, 5, 10), date(2024, 5, 10)) == [
@@ -84,6 +94,7 @@ def test_month_windows_start_after_end_is_empty():
 
 # ------------------------------------------------------------- stage_rows
 
+
 def test_stage_rows_dedupes_identical_content_within_batch():
     session = MagicMock()
     # stage_rows counts inserted rows via RETURNING
@@ -93,8 +104,13 @@ def test_stage_rows_dedupes_identical_content_within_batch():
         {"TRANSACTION_NUMBER": "A", "X": 1, "RN": 2, "TOTAL": 100},  # dup after clean
         {"TRANSACTION_NUMBER": "B", "X": 2, "RN": 3, "TOTAL": 100},
     ]
-    staged = dld.stage_rows(session, source_id=7, endpoint="transactions",
-                            request_payload={"P": "1"}, rows=rows)
+    staged = dld.stage_rows(
+        session,
+        source_id=7,
+        endpoint="transactions",
+        request_payload={"P": "1"},
+        rows=rows,
+    )
 
     stmt = session.execute.call_args[0][0]
     value_rows = insert_value_rows(stmt)

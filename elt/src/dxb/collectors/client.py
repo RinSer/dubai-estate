@@ -4,6 +4,7 @@ Request tier of the two-tier retry design (plan §3): transient 5xx / network
 errors / HTML error pages are retried here with exponential backoff; whole-run
 failures are handled by the pipeline-level tenacity wrapper.
 """
+
 from __future__ import annotations
 
 import logging
@@ -114,7 +115,9 @@ class DldClient:
         if len(rows) < self.page_size or (total and self.page_size >= total):
             return
 
-        remaining_skips = list(range(self.page_size, total or self.page_size, self.page_size))
+        remaining_skips = list(
+            range(self.page_size, total or self.page_size, self.page_size)
+        )
         if not remaining_skips:
             return
 

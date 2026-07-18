@@ -1,4 +1,5 @@
 """Unit tests for dxb.scheduler (job registration + cron wiring)."""
+
 from __future__ import annotations
 
 from dxb import scheduler

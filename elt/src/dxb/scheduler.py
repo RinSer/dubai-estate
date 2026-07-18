@@ -3,6 +3,7 @@
 Retries/alerts live in pipeline.run_with_retries (APScheduler itself has
 neither); a crashed job never kills the scheduler process.
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,14 +29,16 @@ def build_scheduler() -> BlockingScheduler:
         CronTrigger(hour=settings.schedule_hour, minute=settings.schedule_minute),
         id="daily_pipeline",
         max_instances=1,
-        coalesce=True,           # missed runs (host asleep) collapse into one
+        coalesce=True,  # missed runs (host asleep) collapse into one
         misfire_grace_time=3600,
     )
     return scheduler
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    )
     settings = get_settings()
     scheduler = build_scheduler()
     log.info(

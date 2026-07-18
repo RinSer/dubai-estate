@@ -10,7 +10,9 @@ from dxb.config import get_settings
 
 app = typer.Typer(help="Dubai real estate ELT: DLD open data -> Postgres star schema")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+)
 
 
 def _parse(day: str) -> date:
@@ -43,11 +45,14 @@ def collect(
     from dxb.db.engine import get_session, source_id
 
     settings = get_settings()
-    with get_session() as session, DldClient(
-        page_size=settings.page_size,
-        throttle_seconds=settings.throttle_seconds,
-        max_concurrency=settings.max_concurrency,
-    ) as client:
+    with (
+        get_session() as session,
+        DldClient(
+            page_size=settings.page_size,
+            throttle_seconds=settings.throttle_seconds,
+            max_concurrency=settings.max_concurrency,
+        ) as client,
+    ):
         sid = source_id(session)
         if endpoint == "areas":
             report = collect_areas(session, client, sid)
@@ -94,7 +99,9 @@ def backfill(
     from dxb.pipeline import run_with_retries
 
     d_to = _parse(to_date) if to_date else date.today()
-    report = run_with_retries(kind="backfill", date_from=_parse(from_date), date_to=d_to)
+    report = run_with_retries(
+        kind="backfill", date_from=_parse(from_date), date_to=d_to
+    )
     raise typer.Exit(0 if report else 1)
 
 
@@ -135,14 +142,20 @@ def stats() -> None:
             ("fact_sale_transaction", FactSaleTransaction),
             ("fact_rent_contract", FactRentContract),
         ]:
-            typer.echo(f"{label:26} {session.scalar(select(func.count()).select_from(model)):>10,}")
+            count = session.scalar(select(func.count()).select_from(model))
+            typer.echo(f"{label:26} {count:>10,}")
         unprocessed = session.scalar(
-            select(func.count()).select_from(StgRaw).where(StgRaw.processed_at.is_(None))
+            select(func.count())
+            .select_from(StgRaw)
+            .where(StgRaw.processed_at.is_(None))
         )
         typer.echo(f"{'stg_raw unprocessed':26} {unprocessed:>10,}")
 
-        typer.echo("\nTop-10 areas by median sale AED/m2 (residential, latest full month):")
-        rows = session.execute(text("""
+        typer.echo(
+            "\nTop-10 areas by median sale AED/m2 (residential, latest full month):"
+        )
+        rows = session.execute(
+            text("""
             WITH latest AS (
                 SELECT max(month) AS month FROM mart_area_monthly
                 WHERE usage = 'Residential' AND sale_cnt >= 10
@@ -151,10 +164,12 @@ def stats() -> None:
                    m.rent_median_annual_m2, m.gross_yield_pct
             FROM mart_area_monthly m
             JOIN dim_area a ON a.id = m.area_id, latest
-            WHERE m.month = latest.month AND m.usage = 'Residential' AND m.sale_cnt >= 10
+            WHERE m.month = latest.month AND m.usage = 'Residential'
+                AND m.sale_cnt >= 10
             ORDER BY m.sale_median_price_m2 DESC NULLS LAST
             LIMIT 10
-        """)).all()
+        """)
+        ).all()
         for name, cnt, med, rent_med, yield_pct in rows:
             typer.echo(
                 f"  {name:35} sales={cnt:>5} median={med or 0:>10,.0f} "

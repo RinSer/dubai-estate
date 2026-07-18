@@ -5,6 +5,7 @@ module retries the WHOLE run via tenacity (APScheduler has no retries of its
 own). Every attempt is idempotent: staging is hash-deduped and facts upsert on
 natural keys, so a crashed attempt simply continues on the next one.
 """
+
 from __future__ import annotations
 
 import logging
@@ -101,7 +102,9 @@ def run_with_retries(
         ):
             with attempt:
                 attempts = attempt.retry_state.attempt_number
-                log.info("pipeline %s attempt %s/%s", kind, attempts, settings.job_attempts)
+                log.info(
+                    "pipeline %s attempt %s/%s", kind, attempts, settings.job_attempts
+                )
                 report = run_pipeline(kind, date_from, date_to)
     except RetryError as retry_err:
         error_text = "".join(

@@ -6,6 +6,7 @@ Upsert strategy (plan §3):
   guarded by IS DISTINCT FROM so unchanged rows are not rewritten;
   updated_at fires only on real changes.
 """
+
 from __future__ import annotations
 
 import logging
@@ -32,6 +33,7 @@ BATCH = 5000
 
 
 # ------------------------------------------------------------- small utils
+
 
 def norm_name(value: str | None) -> str | None:
     if value is None:
@@ -75,6 +77,7 @@ def to_text(value: Any) -> str | None:
 
 # ------------------------------------------------------------- dim caches
 
+
 class DimCaches:
     """In-memory id lookups; dim cardinalities are tiny (areas ~300,
     projects ~few thousand), so caching them whole is fine."""
@@ -82,7 +85,8 @@ class DimCaches:
     def __init__(self, session: Session) -> None:
         self.session = session
         self.areas: dict[str, int] = {
-            name: id_ for name, id_ in session.execute(select(DimArea.name_en, DimArea.id))
+            name: id_
+            for name, id_ in session.execute(select(DimArea.name_en, DimArea.id))
         }
         self.ptypes: dict[tuple, int] = {
             (u, t, s): id_
@@ -162,14 +166,18 @@ class DimCaches:
             self.projects[key] = project.id
         return self.projects[key]
 
-    def developer(self, dld_number: Any, name_en: Any, name_ar: Any = None) -> int | None:
+    def developer(
+        self, dld_number: Any, name_en: Any, name_ar: Any = None
+    ) -> int | None:
         num = to_int(dld_number)
         name = to_text(name_en)
         if num is None and not name:
             return None
         if num is not None and num in self.developers:
             return self.developers[num]
-        dev = DimDeveloper(dld_number=num, name_en=name or f"#{num}", name_ar=to_text(name_ar))
+        dev = DimDeveloper(
+            dld_number=num, name_en=name or f"#{num}", name_ar=to_text(name_ar)
+        )
         self.session.add(dev)
         self.session.flush()
         if num is not None:
@@ -178,6 +186,7 @@ class DimCaches:
 
 
 # --------------------------------------------------------- staging reader
+
 
 def _staged_batches(session: Session, endpoint: str) -> Iterator[list[StgRaw]]:
     while True:
@@ -204,6 +213,7 @@ def _mark_processed(session: Session, batch: list[StgRaw]) -> None:
 
 
 # ------------------------------------------------------------- transforms
+
 
 def transform_areas(session: Session, caches: DimCaches) -> int:
     """carea-lookup rows -> dim_area (adds official code + Arabic name)."""
@@ -263,7 +273,9 @@ def transform_projects(session: Session, caches: DimCaches, source_url: str) -> 
             )
             project.area_id = area_id
             project.developer_id = caches.developer(
-                row.get("DEVELOPER_NUMBER"), row.get("DEVELOPER_EN"), row.get("DEVELOPER_AR")
+                row.get("DEVELOPER_NUMBER"),
+                row.get("DEVELOPER_EN"),
+                row.get("DEVELOPER_AR"),
             )
             project.status = to_text(row.get("PROJECT_STATUS"))
             project.project_type = to_text(row.get("PRJ_TYPE_EN"))
@@ -287,8 +299,18 @@ def transform_projects(session: Session, caches: DimCaches, source_url: str) -> 
 
 
 _SALE_UPDATE_COLS = [
-    "txn_group", "procedure_name", "is_offplan", "is_freehold", "property_type_id",
-    "rooms", "parking", "area_id", "project_id", "parcel_id", "amount_aed", "source_ref",
+    "txn_group",
+    "procedure_name",
+    "is_offplan",
+    "is_freehold",
+    "property_type_id",
+    "rooms",
+    "parking",
+    "area_id",
+    "project_id",
+    "parcel_id",
+    "amount_aed",
+    "source_ref",
 ]
 
 
@@ -328,8 +350,14 @@ def _sale_values(stg: StgRaw, caches: DimCaches, source_url: str) -> dict | None
 
 
 _RENT_UPDATE_COLS = [
-    "version", "is_freehold", "property_type_id", "rooms", "project_id",
-    "parcel_id", "contract_amount_aed", "source_ref",
+    "version",
+    "is_freehold",
+    "property_type_id",
+    "rooms",
+    "project_id",
+    "parcel_id",
+    "contract_amount_aed",
+    "source_ref",
 ]
 
 
@@ -403,7 +431,10 @@ def _upsert_facts(
         stmt = (
             stmt.on_conflict_do_update(
                 constraint=constraint,
-                set_={**{c: excluded[c] for c in update_cols}, "updated_at": func.now()},
+                set_={
+                    **{c: excluded[c] for c in update_cols},
+                    "updated_at": func.now(),
+                },
                 where=changed,
             )
             # rowcount is unreliable for chunked multi-row INSERT..ON CONFLICT
@@ -418,7 +449,9 @@ def _upsert_facts(
     return written
 
 
-def transform_transactions(session: Session, caches: DimCaches, source_url: str) -> dict:
+def transform_transactions(
+    session: Session, caches: DimCaches, source_url: str
+) -> dict:
     written = skipped = 0
     for batch in _staged_batches(session, "transactions"):
         values = []
@@ -456,8 +489,13 @@ def transform_rents(session: Session, caches: DimCaches, source_url: str) -> dic
             FactRentContract.__table__,
             "ux_rent_natural",
             [
-                "source_id", "registration_date", "area_id", "annual_amount_aed",
-                "actual_area_m2", "start_date", "end_date",
+                "source_id",
+                "registration_date",
+                "area_id",
+                "annual_amount_aed",
+                "actual_area_m2",
+                "start_date",
+                "end_date",
             ],
             _RENT_UPDATE_COLS,
             values,
