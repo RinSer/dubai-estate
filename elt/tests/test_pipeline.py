@@ -6,6 +6,8 @@ fake, and tenacity waits are zeroed via env so tests are instant.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from dxb import pipeline
@@ -87,3 +89,79 @@ def test_single_attempt_success(monkeypatch, mocker, fake_session_store):
     assert run_pipeline.call_count == 1
     assert notify_success.call_args[0][1] == 1  # attempts=1
     assert fake_session_store.store[1].status == "ok"
+
+
+# --------------------------------------------------------- cancellation
+
+
+def test_run_cancelled_marks_status_cancelled_not_failed(
+    monkeypatch, mocker, fake_session_store
+):
+    """RunCancelled (raised by the SIGTERM handler mid-run) must not be
+    treated as an ordinary failure: no retry, no failure alert, status
+    'cancelled' rather than 'failed'."""
+    monkeypatch.setenv("DXB_JOB_ATTEMPTS", "3")
+    mocker.patch("dxb.pipeline.get_session", fake_session_store)
+    run_pipeline = mocker.patch(
+        "dxb.pipeline.run_pipeline",
+        side_effect=pipeline.RunCancelled("received signal 15"),
+    )
+    notify_success = mocker.patch("dxb.pipeline.alerts.notify_success")
+    notify_failure = mocker.patch("dxb.pipeline.alerts.notify_failure")
+
+    result = pipeline.run_with_retries("backfill")
+
+    assert result is None
+    assert run_pipeline.call_count == 1  # not retried
+    notify_success.assert_not_called()
+    notify_failure.assert_not_called()
+
+    run = fake_session_store.store[1]
+    assert run.status == "cancelled"
+    assert run.attempts == 1
+    assert "received signal 15" in run.error
+    assert run.finished_at is not None
+
+
+def test_keyboard_interrupt_also_marks_cancelled(
+    monkeypatch, mocker, fake_session_store
+):
+    monkeypatch.setenv("DXB_JOB_ATTEMPTS", "3")
+    mocker.patch("dxb.pipeline.get_session", fake_session_store)
+    run_pipeline = mocker.patch(
+        "dxb.pipeline.run_pipeline", side_effect=KeyboardInterrupt
+    )
+
+    result = pipeline.run_with_retries("backfill")
+
+    assert result is None
+    assert run_pipeline.call_count == 1
+    assert fake_session_store.store[1].status == "cancelled"
+
+
+def test_signal_handler_skipped_off_main_thread(
+    monkeypatch, mocker, fake_session_store
+):
+    """APScheduler runs daily jobs in a worker thread, where Python forbids
+    installing a signal handler (ValueError: signal only works in main
+    thread). run_with_retries must detect this and skip installation rather
+    than crash."""
+    monkeypatch.setenv("DXB_JOB_ATTEMPTS", "1")
+    mocker.patch("dxb.pipeline.get_session", fake_session_store)
+    mocker.patch("dxb.pipeline.run_pipeline", return_value={"ok": 1})
+    mocker.patch("dxb.pipeline.alerts.notify_success")
+
+    outcome = {}
+
+    def worker():
+        try:
+            outcome["result"] = pipeline.run_with_retries("daily")
+        except Exception as e:  # pragma: no cover - failure path only
+            outcome["error"] = e
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join(timeout=5)
+
+    assert "error" not in outcome
+    assert outcome["result"] == {"ok": 1}

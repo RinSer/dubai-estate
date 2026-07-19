@@ -9,11 +9,19 @@ natural keys, so a crashed attempt simply continues on the next one.
 from __future__ import annotations
 
 import logging
+import signal
+import threading
 import time
 import traceback
 from datetime import date, datetime, timezone
 
-from tenacity import RetryError, Retrying, stop_after_attempt, wait_exponential
+from tenacity import (
+    RetryError,
+    Retrying,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from dxb import alerts
 from dxb.collectors.client import DldClient
@@ -27,9 +35,16 @@ from dxb.config import get_settings
 from dxb.db.engine import get_session, source_id
 from dxb.db.models import EtlRun
 from dxb.marts import rebuild_marts
+from dxb.osm_geo.enrich import enrich_missing_areas
 from dxb.transform.dld import transform_all
 
 log = logging.getLogger(__name__)
+
+
+class RunCancelled(Exception):
+    """Raised when the process receives SIGTERM mid-run (e.g. `docker stop`
+    on a one-off backfill container), so the run gets marked 'cancelled'
+    instead of sitting at 'running' forever."""
 
 
 def run_pipeline(
@@ -64,6 +79,10 @@ def run_pipeline(
                 )
         report["transform"] = transform_all(session, settings.source_url)
         report["marts"] = rebuild_marts(session)
+        # Non-fatal: a newly-seen area name can create an un-enriched
+        # dim_area stub on any run; never lets a geocoding hiccup fail or
+        # retry today's actual data collection.
+        report["geo_enrich"] = enrich_missing_areas(session)
 
     report["duration_seconds"] = round(time.monotonic() - started, 1)
     return report
@@ -89,37 +108,73 @@ def run_with_retries(
         session.commit()
         run_id = run.id
 
+    # SIGTERM -> RunCancelled, so `docker stop` on a one-off backfill
+    # container marks the run 'cancelled' instead of leaving it stuck at
+    # 'running' forever. Python only allows installing signal handlers from
+    # the main thread; scheduled daily runs execute inside an APScheduler
+    # worker thread, so this is skipped there (a plain `Exception` traceback
+    # is still preferable to a crash — those runs just won't get the nicer
+    # 'cancelled' status if their container is killed mid-flight).
+    on_main_thread = threading.current_thread() is threading.main_thread()
+    previous_handler = None
+    if on_main_thread:
+
+        def _on_sigterm(signum, _frame):
+            raise RunCancelled(f"received signal {signum}")
+
+        previous_handler = signal.signal(signal.SIGTERM, _on_sigterm)
+
     attempts = 0
     try:
-        for attempt in Retrying(
-            stop=stop_after_attempt(settings.job_attempts),
-            wait=wait_exponential(
-                multiplier=1,
-                min=settings.job_wait_min_seconds,
-                max=settings.job_wait_max_seconds,
-            ),
-            reraise=False,
-        ):
-            with attempt:
-                attempts = attempt.retry_state.attempt_number
-                log.info(
-                    "pipeline %s attempt %s/%s", kind, attempts, settings.job_attempts
-                )
-                report = run_pipeline(kind, date_from, date_to)
-    except RetryError as retry_err:
-        error_text = "".join(
-            traceback.format_exception(retry_err.last_attempt.exception())
-        )
-        log.error("pipeline failed after %s attempts:\n%s", attempts, error_text)
-        with get_session() as session:
-            run = session.get(EtlRun, run_id)
-            run.status = "failed"
-            run.attempts = attempts
-            run.finished_at = datetime.now(timezone.utc)
-            run.error = error_text[-8000:]
-            session.commit()
-        alerts.notify_failure(error_text[-8000:], attempts, settings)
-        return None
+        try:
+            for attempt in Retrying(
+                stop=stop_after_attempt(settings.job_attempts),
+                wait=wait_exponential(
+                    multiplier=1,
+                    min=settings.job_wait_min_seconds,
+                    max=settings.job_wait_max_seconds,
+                ),
+                retry=retry_if_not_exception_type((RunCancelled, KeyboardInterrupt)),
+                reraise=False,
+            ):
+                with attempt:
+                    attempts = attempt.retry_state.attempt_number
+                    log.info(
+                        "pipeline %s attempt %s/%s",
+                        kind,
+                        attempts,
+                        settings.job_attempts,
+                    )
+                    report = run_pipeline(kind, date_from, date_to)
+        except RetryError as retry_err:
+            error_text = "".join(
+                traceback.format_exception(retry_err.last_attempt.exception())
+            )
+            log.error("pipeline failed after %s attempts:\n%s", attempts, error_text)
+            with get_session() as session:
+                run = session.get(EtlRun, run_id)
+                run.status = "failed"
+                run.attempts = attempts
+                run.finished_at = datetime.now(timezone.utc)
+                run.error = error_text[-8000:]
+                session.commit()
+            alerts.notify_failure(error_text[-8000:], attempts, settings)
+            return None
+        except (RunCancelled, KeyboardInterrupt) as cancel_err:
+            log.warning(
+                "pipeline %s cancelled on attempt %s: %s", kind, attempts, cancel_err
+            )
+            with get_session() as session:
+                run = session.get(EtlRun, run_id)
+                run.status = "cancelled"
+                run.attempts = attempts
+                run.finished_at = datetime.now(timezone.utc)
+                run.error = f"cancelled: {cancel_err}"
+                session.commit()
+            return None
+    finally:
+        if on_main_thread:
+            signal.signal(signal.SIGTERM, previous_handler)
 
     with get_session() as session:
         run = session.get(EtlRun, run_id)

@@ -44,6 +44,7 @@ _DXB_ENV_VARS = [
     "SMTP_STARTTLS",
     "ALERT_TO",
     "ALERT_FROM",
+    "DXB_DATA_RAW",
 ]
 
 
@@ -77,6 +78,7 @@ _SETTINGS_DEFAULTS = dict(
     smtp_starttls=True,
     alert_to="",
     alert_from="dxb-elt@localhost",
+    data_raw_dir="/app/data/raw",
 )
 
 

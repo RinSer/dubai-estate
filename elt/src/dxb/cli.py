@@ -122,6 +122,48 @@ def run_scheduler() -> None:
     main()
 
 
+@app.command("import-csv")
+def import_csv(
+    source: str = typer.Argument(
+        help="alexefimik | austinpowers | area-coords | project-coords | all"
+    ),
+) -> None:
+    """One-off historical import from data/raw/*.csv (see docs/CSV_DATA_ANALYSIS.md).
+    Not part of the daily scheduler or backfill — run manually, once."""
+    from dxb.csv_import.pipeline import import_all, import_geo, import_source
+    from dxb.csv_import.sources import GEO_SOURCES, TRANSACTION_SOURCES
+    from dxb.db.engine import get_session
+
+    settings = get_settings()
+    with get_session() as session:
+        if source == "all":
+            report = import_all(session, settings.source_url)
+        elif source in TRANSACTION_SOURCES:
+            report = import_source(session, source, settings.source_url)
+        elif source in GEO_SOURCES:
+            report = import_geo(session, source)
+        else:
+            raise typer.BadParameter(f"unknown source {source!r}")
+    typer.echo(report)
+
+
+@app.command("enrich-geo")
+def enrich_geo() -> None:
+    """One-off full-sweep OSM/Nominatim geo enrichment for dim_area (see
+    docs/OSM_AREA_GEO_ENRICHMENT.md). The daily/backfill/CSV-import pipelines
+    already run a lighter incremental version of this automatically for
+    newly-seen areas — this command is for the initial backfill and for
+    re-running after the matcher improves."""
+    from dxb.db.engine import get_session
+    from dxb.osm_geo.enrich import enrich_areas
+
+    with get_session() as session:
+        report = enrich_areas(session, missing_only=False)
+    typer.echo(
+        {k: v for k, v in report.items() if k != "details"}
+    )  # details dumped separately for docs, not the terminal
+
+
 @app.command()
 def stats() -> None:
     """Row counts and a quick market sanity report."""

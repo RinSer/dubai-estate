@@ -40,6 +40,8 @@ class Settings:
     alert_to: str
     alert_from: str
 
+    data_raw_dir: str
+
     @property
     def dsn(self) -> str:
         return (
@@ -78,4 +80,8 @@ def get_settings() -> Settings:
         smtp_starttls=_get("SMTP_STARTTLS", "1") not in ("0", "false", "no"),
         alert_to=_get("ALERT_TO", ""),
         alert_from=_get("ALERT_FROM", "dxb-elt@localhost"),
+        # Read-only volume mount for the one-off historical CSV import
+        # (data/ is gitignored and not baked into the image — see
+        # docker-compose.yml).
+        data_raw_dir=_get("DXB_DATA_RAW", "/app/data/raw"),
     )
