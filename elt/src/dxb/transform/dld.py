@@ -26,6 +26,7 @@ from dxb.db.models import (
     FactSaleTransaction,
     StgRaw,
 )
+from dxb.transform.keys import txn_key_from_gateway
 
 log = logging.getLogger(__name__)
 
@@ -299,6 +300,7 @@ def transform_projects(session: Session, caches: DimCaches, source_url: str) -> 
 
 
 _SALE_UPDATE_COLS = [
+    "txn_key",
     "txn_group",
     "procedure_name",
     "is_offplan",
@@ -324,6 +326,7 @@ def _sale_values(stg: StgRaw, caches: DimCaches, source_url: str) -> dict | None
         return None
     return {
         "txn_number": txn_number,
+        "txn_key": txn_key_from_gateway(txn_number),
         "txn_date": datetime.fromisoformat(txn_date),
         "txn_group": to_text(row.get("GROUP_EN")) or "Unknown",
         "procedure_name": to_text(row.get("PROCEDURE_EN")),
@@ -350,15 +353,36 @@ def _sale_values(stg: StgRaw, caches: DimCaches, source_url: str) -> dict | None
 
 
 _RENT_UPDATE_COLS = [
+    "registration_date",
+    "start_date",
+    "end_date",
     "version",
     "is_freehold",
     "property_type_id",
     "rooms",
+    "area_id",
     "project_id",
     "parcel_id",
+    "actual_area_m2",
+    "annual_amount_aed",
     "contract_amount_aed",
-    "source_ref",
 ]
+
+
+def _gateway_rent_source_ref(row: dict) -> str:
+    """The gateway exposes no contract number (CONTRACT_NUMBER is always
+    null), so identity is a deterministic composite of the fields that
+    describe the contract. Same components as the pre-data.dubai natural key,
+    collapsed into the single source_ref the table now keys on."""
+    parts = [
+        to_text(row.get("REGISTRATION_DATE")) or "",
+        to_text(row.get("AREA_EN")) or "",
+        to_text(row.get("ANNUAL_AMOUNT")) or "",
+        to_text(row.get("ACTUAL_AREA")) or "",
+        to_text(row.get("START_DATE")) or "",
+        to_text(row.get("END_DATE")) or "",
+    ]
+    return "|".join(parts)
 
 
 def _rent_values(stg: StgRaw, caches: DimCaches, source_url: str) -> dict | None:
@@ -388,9 +412,13 @@ def _rent_values(stg: StgRaw, caches: DimCaches, source_url: str) -> dict | None
         "actual_area_m2": to_float(row.get("ACTUAL_AREA")),
         "annual_amount_aed": annual,
         "contract_amount_aed": to_float(row.get("CONTRACT_AMOUNT")),
+        # The gateway returns one row per contract and no property count.
+        "contract_id": None,
+        "line_number": None,
+        "no_of_prop": None,
         "source_id": stg.source_id,
         "source_url": source_url,
-        "source_ref": to_text(row.get("CONTRACT_NUMBER")),
+        "source_ref": _gateway_rent_source_ref(row),
     }
 
 
@@ -488,15 +516,7 @@ def transform_rents(session: Session, caches: DimCaches, source_url: str) -> dic
             session,
             FactRentContract.__table__,
             "ux_rent_natural",
-            [
-                "source_id",
-                "registration_date",
-                "area_id",
-                "annual_amount_aed",
-                "actual_area_m2",
-                "start_date",
-                "end_date",
-            ],
+            ["source_id", "source_ref"],
             _RENT_UPDATE_COLS,
             values,
         )

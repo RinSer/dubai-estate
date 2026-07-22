@@ -1,4 +1,11 @@
-"""initial star schema (plan §4)
+"""initial star schema — single squashed baseline
+
+Builds the complete current schema from the models in one step. Squashed
+2026-07-22 during the data.dubai rebuild: the earlier incremental migrations
+(is_government / nullable is_freehold / OSM geo columns) were folded back into
+the models, because this migration uses create_all() and re-running those
+ALTERs on a from-zero volume would collide with the columns create_all had
+already produced. See docs/DATADUBAI_REBUILD_PLAN.md §2.
 
 Revision ID: 0001
 Revises:

@@ -227,7 +227,12 @@ def test_rent_values_maps_fields():
     assert v["area_id"] == 11 and v["project_id"] == 31
     assert v["annual_amount_aed"] == 120000.0
     assert v["contract_amount_aed"] == 120000.0
-    assert v["source_id"] == 3 and v["source_ref"] == "C-9"
+    assert v["source_id"] == 3
+    # The gateway exposes no contract number, so identity is a deterministic
+    # composite of the contract-describing fields.
+    assert v["source_ref"] == "2024-06-01|Marsa Dubai|120000|80|2024-06-01|2025-05-31"
+    assert v["contract_id"] is None and v["line_number"] is None
+    assert v["no_of_prop"] is None
 
 
 def test_rent_values_none_when_no_registration():

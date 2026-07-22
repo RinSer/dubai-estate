@@ -147,6 +147,38 @@ def import_csv(
     typer.echo(report)
 
 
+@app.command("import-datadubai")
+def import_datadubai(
+    dataset: str = typer.Argument(help="transactions | rents | all"),
+) -> None:
+    """One-off historical import from the data.dubai CSV exports in data/raw
+    (see docs/DATADUBAI_REBUILD_PLAN.md). Not part of the daily scheduler."""
+    from dxb.datadubai.importer import import_dataset
+    from dxb.datadubai.pipeline import import_all
+    from dxb.datadubai.sources import DATASETS
+    from dxb.db.engine import get_session
+
+    settings = get_settings()
+    with get_session() as session:
+        if dataset == "all":
+            report = import_all(session, settings.source_url)
+        elif dataset in DATASETS:
+            report = import_dataset(session, dataset, settings.source_url)
+        else:
+            raise typer.BadParameter(f"unknown dataset {dataset!r}")
+    typer.echo(report)
+
+
+@app.command("set-cutovers")
+def set_cutovers() -> None:
+    """Recompute the data.dubai cutovers and the gateway watermarks."""
+    from dxb.datadubai.cutover import finalize
+    from dxb.db.engine import get_session
+
+    with get_session() as session:
+        typer.echo(finalize(session))
+
+
 @app.command("enrich-geo")
 def enrich_geo() -> None:
     """One-off full-sweep OSM/Nominatim geo enrichment for dim_area (see
