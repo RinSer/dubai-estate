@@ -148,14 +148,17 @@ class StubCaches:
         ptype_id: int | None = 20,
         project_id: int | None = 30,
         developer_id: int | None = 40,
+        building_id: int | None = 50,
     ) -> None:
         self._area_id = area_id
         self._ptype_id = ptype_id
         self._project_id = project_id
         self._developer_id = developer_id
+        self._building_id = building_id
         self.area_calls: list = []
         self.ptype_calls: list = []
         self.project_calls: list = []
+        self.building_calls: list = []
 
     def area(self, name, name_ar=None):
         self.area_calls.append((name, name_ar))
@@ -173,6 +176,10 @@ class StubCaches:
 
     def developer(self, dld_number, name_en, name_ar=None):
         return self._developer_id
+
+    def building(self, name, *, area_id=None, project_id=None, name_ar=None):
+        self.building_calls.append((name, area_id, project_id))
+        return self._building_id
 
 
 @pytest.fixture

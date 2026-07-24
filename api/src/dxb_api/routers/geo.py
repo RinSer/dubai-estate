@@ -48,9 +48,10 @@ async def areas_geojson(
     "/projects",
     summary="Projects as GeoJSON points",
     description=(
-        "Returns an empty-but-valid FeatureCollection until project "
-        "geolocation enrichment lands: every dim_project.location is "
-        "currently NULL. Documented, not a surprise."
+        "Each feature carries geo_match_method + is_precise, and for "
+        "building-derived points geo_building_count / geo_spread_m — so the "
+        "map distinguishes precise pins from the coarse area-centroid backbone "
+        "and knows when a project is really a broad footprint."
     ),
 )
 async def projects_geojson(
@@ -61,3 +62,28 @@ async def projects_geojson(
     ] = None,
 ):
     return await repo.projects_geojson(project_ids=csv_ints(project_ids))
+
+
+@router.get(
+    "/buildings",
+    summary="Buildings as GeoJSON points",
+    description=(
+        "Makani-geocoded buildings for building-level zoom. Only precise "
+        "(makani_validated) buildings have a point, so this never returns a "
+        "coarse location. Scope with area_id when zoomed into one area."
+    ),
+)
+async def buildings_geojson(
+    repo: GeoRepoDep,
+    _: PrincipalDep,
+    area_id: Annotated[
+        int | None, Query(description="Scope to one area (the common map case).")
+    ] = None,
+    project_id: int | None = None,
+    building_ids: Annotated[
+        str | None, Query(description="Comma-separated ids.")
+    ] = None,
+):
+    return await repo.buildings_geojson(
+        area_id=area_id, project_id=project_id, building_ids=csv_ints(building_ids)
+    )

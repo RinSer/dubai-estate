@@ -1,9 +1,9 @@
 # data.dubai transactions & rent-contracts analysis
 
 Prepared 2026-07-22, from a full streaming analysis of the official
-[data.dubai](https://data.dubai) exports supplied via admin data-access
-(transactions dataset `l/470061`, rent contracts `l/468586`). Files under
-`data/raw/data.dubai/`.
+[data.dubai](https://data.dubai) open-data exports — publicly downloadable, no
+login required (transactions dataset `l/470061`, rent contracts `l/468586`).
+Files under `data/raw/data.dubai/`.
 
 **Headline: this is the source that closes the 2023–2025 gap — and more.**
 Official DLD data, richer than what we have, spanning 1975→2026 for

@@ -30,6 +30,7 @@ SALE_UPDATE_COLS = [
     "parking",
     "area_id",
     "project_id",
+    "building_id",
     "parcel_id",
     "amount_aed",
     "source_ref",
@@ -67,11 +68,19 @@ def sale_values(
         "rooms": to_text(row.get("rooms_en")),
         "parking": to_text(row.get("has_parking")),
         "area_id": area_id,
-        "project_id": caches.project(
-            row.get("project_name_en"),
-            master_name=to_text(row.get("master_project_en")),
+        "project_id": (
+            project_id := caches.project(
+                row.get("project_name_en"),
+                master_name=to_text(row.get("master_project_en")),
+                area_id=area_id,
+                name_ar=row.get("project_name_ar"),
+            )
+        ),
+        "building_id": caches.building(
+            row.get("building_name_en"),
             area_id=area_id,
-            name_ar=row.get("project_name_ar"),
+            project_id=project_id,
+            name_ar=row.get("building_name_ar"),
         ),
         "parcel_id": None,  # not present in this dataset
         "actual_area_m2": to_float(row.get("procedure_area")),

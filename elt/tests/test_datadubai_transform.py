@@ -34,6 +34,8 @@ def _txn_row(**overrides) -> dict:
         "project_name_en": "Some Project",
         "project_name_ar": None,
         "master_project_en": None,
+        "building_name_en": "Lake Terrace",
+        "building_name_ar": None,
         "procedure_area": "100.19",
     }
     base.update(overrides)
@@ -54,7 +56,14 @@ def test_sale_maps_fields_and_txn_key():
     assert v["is_freehold"] is None
     assert v["parcel_id"] is None
     assert v["area_id"] == 10 and v["project_id"] == 30
+    assert v["building_id"] == 50  # captured from building_name_en
     assert v["source_id"] == 7 and v["source_ref"] == "1-102-2026-59715"
+
+
+def test_sale_captures_building_scoped_to_area_and_project():
+    caches = StubCaches(area_id=10, project_id=30, building_id=50)
+    dd.sale_values(_txn_row(), caches, 1, "u")
+    assert caches.building_calls == [("Lake Terrace", 10, 30)]
 
 
 def test_sale_offplan_flag():

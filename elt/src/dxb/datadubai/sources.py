@@ -21,6 +21,9 @@ class DataDubaiDataset:
     pattern: str  # filename glob within data/raw
     source_code: str  # dim_source.code
     encoding: str = "utf-8-sig"  # strips a BOM if present, no-op otherwise
+    # Fact datasets get a mart cutover + gateway watermark; the building
+    # register is attribute enrichment, so it participates in neither.
+    is_fact: bool = True
 
 
 DATASETS: dict[str, DataDubaiDataset] = {
@@ -34,7 +37,19 @@ DATASETS: dict[str, DataDubaiDataset] = {
         pattern="rent_contracts_*.csv",
         source_code="datadubai_rents",
     ),
+    # Building register — attribute enrichment, not facts. Note the glob
+    # excludes building_summary_information_*.csv (a separate, parcel-keyed
+    # permit dataset we don't ingest; see docs/BUILDING_CSV_ANALYSIS.md).
+    "buildings": DataDubaiDataset(
+        key="buildings",
+        pattern="buildings_*.csv",
+        source_code="datadubai_buildings",
+        is_fact=False,
+    ),
 }
+
+# Datasets that carry facts (and therefore a cutover/watermark).
+FACT_DATASETS = tuple(k for k, d in DATASETS.items() if d.is_fact)
 
 
 def data_raw_dir() -> Path:

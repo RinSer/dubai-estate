@@ -153,6 +153,48 @@ ELT and an `AsyncSession` in the API. See docs/API_DESIGN.md §7b.
   didn't justify it. Match that judgment call rather than reflexively
   reaching for a library.
 
+## Geospatial data sources
+
+Coordinates never come from the DLD data itself — every DLD dataset (gateway
+and data.dubai) is tabular, carrying area/zone/parcel *ids* but no geometry.
+So all lat/long is enriched from two external geocoders, each its own
+`dim_source` row and each validated the same way. See
+[docs/OSM_AREA_GEO_ENRICHMENT.md](docs/OSM_AREA_GEO_ENRICHMENT.md) and
+[docs/PROJECT_GEO_ENRICHMENT.md](docs/PROJECT_GEO_ENRICHMENT.md).
+
+- **OSM / Nominatim** (`elt/src/dxb/osm_geo/`, source code `osm`) — the public
+  OpenStreetMap geocoder, `https://nominatim.openstreetmap.org/search`. Policy:
+  **1 req/sec, descriptive User-Agent** (both enforced in `nominatim.py`, don't
+  remove). Used for **area** geometry (centroids + boundaries) — good coverage
+  for Dubai's communities, and returns polygons for choropleths. It is **weak
+  for buildings/projects**: measured ~6–15% match on project/building names,
+  because OSM simply doesn't contain most of Dubai's residential developments.
+  So it stays the source for areas, not the precise source for buildings.
+- **Makani** (source code `makani`) — Dubai's official addressing system.
+  Implemented as the precise, building-level tier: `dxb/geo/makani.py` (client)
+  and `dxb/geo/buildings.py` (geocode + geometric-median project rollup), with a
+  `dim_building` table and `dxb enrich-buildings` CLI. See
+  docs/PROJECT_GEO_ENRICHMENT.md §6. The endpoint is the public, no-auth
+  `https://www.makani.ae/MakaniWSFBSearchUAEPass/api/api/find-place?text=<name>&lang=E`,
+  which returns Google-Places-backed candidates with real coordinates. Because
+  it's Google-backed it **does** cover Dubai buildings: measured **~75%**
+  validated on the same building-name sample where OSM got 6%. This is the
+  **precise, building-level source**. Two things to respect: it is an
+  **undocumented internal endpoint** (treat it like the DLD gateway — polite
+  throttling, non-fatal on failure), and it appears Google-backed (fine for our
+  own enrichment; note the provenance). There is also a SOAP service
+  (`MakaniPublicDataService`) but it only maps Makani-number↔coordinate, which
+  we can't use — we have neither.
+
+**The rule both share: a geocoded point is only accepted if it falls inside the
+entity's DLD area** (PostGIS `ST_Contains` on the boundary, or `ST_DWithin` of
+the centroid where no boundary exists). This containment check is what keeps a
+same-named building in the wrong community out of the data — in probing it
+rejected 100% of the wrong matches and let through 0 false positives. A point
+that fails validation is recorded as *un*validated (coarse), never as precise;
+`geo_match_method` on `dim_area` / `dim_project` / `dim_building` is the
+load-bearing precise-vs-coarse signal the API and map depend on.
+
 ## Git
 
 Never commit unless explicitly asked, even if a change is complete and

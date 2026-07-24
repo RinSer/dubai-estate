@@ -51,6 +51,63 @@ class Project(GeoFlags):
     percent_completed: Decimal | None = None
     cnt_units: int | None = None
     completion_date: date | None = None
+    geo_match_method: str | None = Field(
+        None,
+        description=(
+            "How `location` was placed. Precise: 'building_point' / "
+            "'building_centroid' (Makani building rollup) and "
+            "'master_of_children'; 'nominatim_validated' (OSM name match). "
+            "Coarse: 'area_centroid', a fallback shared by every project in the "
+            "area — do not render as precise. Null means no location yet."
+        ),
+    )
+    geo_building_count: int | None = Field(
+        None, description="Validated buildings behind a building-derived point."
+    )
+    geo_spread_m: Decimal | None = Field(
+        None,
+        description=(
+            "Dispersion of those buildings (m). Large = big footprint; render "
+            "an area label rather than a precise dot."
+        ),
+    )
+
+
+class Building(BaseModel):
+    """A building — the addressable unit that carries a precise location.
+
+    `is_precise` is true only for a Makani-validated point; a building with
+    `has_geo_data=false` is in the attribute register but not yet geocoded.
+    """
+
+    id: int
+    name_en: str
+    name_ar: str | None = None
+    area_id: int | None = None
+    area_name_en: str | None = None
+    project_id: int | None = None
+    project_name_en: str | None = None
+    geo_match_method: str | None = Field(
+        None, description="'makani_validated' for a precise point, else null."
+    )
+    is_precise: bool = Field(
+        ..., description="True only for a Makani-validated location."
+    )
+    has_geo_data: bool
+    # Physical attributes (data.dubai building register; may be null when the
+    # building came only from a transaction and is not in the CSV register).
+    built_up_area: Decimal | None = None
+    floors: int | None = None
+    flats: int | None = None
+    offices: int | None = None
+    shops: int | None = None
+    car_parks: int | None = None
+    elevators: int | None = None
+    swimming_pools: int | None = None
+    is_free_hold: bool | None = None
+    rooms: str | None = Field(
+        None, description="Villa-typical room count, e.g. '3 B/R'."
+    )
 
 
 class Developer(BaseModel):

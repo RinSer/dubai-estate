@@ -17,6 +17,7 @@ from fastapi import Depends, Header, Request
 from dxb_api.auth import AuthError, Principal, authenticate_api_key, decode_token
 from dxb_api.config import Settings, get_settings
 from dxb_api.repositories.analytics import AnalyticsRepository
+from dxb_api.repositories.buildings import BuildingRepository
 from dxb_api.repositories.db.session import session_scope
 from dxb_api.repositories.dimensions import DimensionRepository
 from dxb_api.repositories.facts import FactRepository
@@ -73,6 +74,9 @@ def _repo_factory(cls):
 
 DimensionRepoDep = Annotated[
     DimensionRepository, Depends(_repo_factory(DimensionRepository))
+]
+BuildingRepoDep = Annotated[
+    BuildingRepository, Depends(_repo_factory(BuildingRepository))
 ]
 FactRepoDep = Annotated[FactRepository, Depends(_repo_factory(FactRepository))]
 MartRepoDep = Annotated[MartRepository, Depends(_repo_factory(MartRepository))]

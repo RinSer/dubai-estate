@@ -34,8 +34,10 @@ from dxb.collectors.dld import (
 )
 from dxb.config import get_settings
 from dxb.db.engine import get_session, source_id
+from dxb.geo.buildings import enrich_missing_building_geo
 from dxb.marts import rebuild_marts
 from dxb.osm_geo.enrich import enrich_missing_areas
+from dxb.osm_geo.projects import enrich_missing_project_geo
 from dxb.transform.dld import transform_all
 
 log = logging.getLogger(__name__)
@@ -83,6 +85,14 @@ def run_pipeline(
         # dim_area stub on any run; never lets a geocoding hiccup fail or
         # retry today's actual data collection.
         report["geo_enrich"] = enrich_missing_areas(session)
+        # Precise tier: Makani-geocode newly-seen buildings, then roll their
+        # points up into project locations (geometric median). Incremental —
+        # only new buildings, a few throttled calls per run.
+        report["building_geo"] = enrich_missing_building_geo(session)
+        # Coarse fallback last: fills the area centroid only for projects that
+        # buildings did not already place (backfill_area_centroids fills NULL
+        # locations only, so it never downgrades a building-derived point).
+        report["project_geo"] = enrich_missing_project_geo(session)
 
     report["duration_seconds"] = round(time.monotonic() - started, 1)
     return report

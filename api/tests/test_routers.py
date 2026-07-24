@@ -60,6 +60,44 @@ class FakeDimensions:
         }
 
 
+class FakeBuildings:
+    def __init__(self):
+        self.kwargs = None
+
+    async def list_buildings(self, **kw):
+        self.kwargs = kw
+        return {
+            "items": [
+                {
+                    "id": 1,
+                    "name_en": "LAKE TERRACE",
+                    "name_ar": None,
+                    "area_id": 5,
+                    "area_name_en": "AL THANYAH FIFTH",
+                    "project_id": 9,
+                    "project_name_en": "LAKE TERRACE",
+                    "geo_match_method": "makani_validated",
+                    "is_precise": True,
+                    "has_geo_data": True,
+                    "built_up_area": None,
+                    "floors": 14,
+                    "flats": None,
+                    "offices": None,
+                    "shops": None,
+                    "car_parks": None,
+                    "elevators": None,
+                    "swimming_pools": None,
+                    "is_free_hold": None,
+                    "rooms": "3 B/R",
+                }
+            ],
+            "limit": 100,
+            "offset": 0,
+            "has_more": False,
+            "total": 1,
+        }
+
+
 class FakeMarts:
     def __init__(self):
         self.kwargs = None
@@ -257,6 +295,46 @@ def test_geo_filters_are_offered_everywhere_the_map_drives(client, path):
     schema = client.app.openapi()
     params = {p["name"] for p in schema["paths"][path]["get"].get("parameters", [])}
     assert {"has_geo_data", "geo_level"} <= params
+
+
+def test_project_schema_exposes_geo_match_method(client):
+    """The honesty-critical field: a client must be able to tell a precise
+    project pin from the coarse area-centroid backbone
+    (docs/PROJECT_GEO_ENRICHMENT.md). Locking it into the public contract."""
+    schema = client.app.openapi()
+    props = schema["components"]["schemas"]["Project"]["properties"]
+    assert "geo_match_method" in props
+
+
+def test_project_schema_exposes_building_confidence_fields(client):
+    """geo_building_count / geo_spread_m tell a client when a 'precise' project
+    is really a broad footprint (docs/PROJECT_GEO_ENRICHMENT.md §6)."""
+    props = client.app.openapi()["components"]["schemas"]["Project"]["properties"]
+    assert "geo_building_count" in props and "geo_spread_m" in props
+
+
+def test_building_endpoints_are_registered_and_documented(client):
+    schema = client.app.openapi()
+    for path in ("/dimensions/buildings", "/dimensions/buildings/{building_id}",
+                 "/geo/buildings"):
+        assert path in schema["paths"]
+        assert schema["paths"][path]["get"].get("summary")
+
+
+def test_building_schema_flags_precise_vs_register_only(client):
+    """A building can be in the attribute register without a Makani point;
+    is_precise must distinguish the two."""
+    props = client.app.openapi()["components"]["schemas"]["Building"]["properties"]
+    assert {"is_precise", "geo_match_method", "has_geo_data", "floors"} <= set(props)
+
+
+def test_list_buildings_passes_filters_through(client, override):
+    fake = FakeBuildings()
+    override(deps.BuildingRepoDep, fake)
+    client.get("/dimensions/buildings?area_id=5&project_id=9&has_geo_data=true")
+    assert fake.kwargs["area_id"] == 5
+    assert fake.kwargs["project_id"] == 9
+    assert fake.kwargs["has_geo_data"] is True
 
 
 def test_missing_ids_are_computed_across_the_whole_result_not_the_page():

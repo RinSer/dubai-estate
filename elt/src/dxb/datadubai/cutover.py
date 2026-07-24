@@ -29,7 +29,7 @@ from dxb_core.models import (
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from dxb.datadubai.sources import DATASETS, files_for
+from dxb.datadubai.sources import DATASETS, FACT_DATASETS, files_for
 from dxb.db.engine import source_id as resolve_source_id
 
 log = logging.getLogger(__name__)
@@ -133,8 +133,9 @@ def set_gateway_watermark(session: Session, key: str) -> dict:
 
 
 def finalize(session: Session) -> dict:
-    """Set both cutovers and both gateway watermarks after a bulk load."""
+    """Set the cutover + gateway watermark for each fact dataset after a bulk
+    load. The building register is enrichment, not a fact, so it is excluded."""
     return {
-        "cutovers": [set_cutover(session, k) for k in DATASETS],
-        "watermarks": [set_gateway_watermark(session, k) for k in DATASETS],
+        "cutovers": [set_cutover(session, k) for k in FACT_DATASETS],
+        "watermarks": [set_gateway_watermark(session, k) for k in FACT_DATASETS],
     }

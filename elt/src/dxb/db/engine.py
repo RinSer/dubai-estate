@@ -13,6 +13,7 @@ from dxb.config import get_settings
 
 log = logging.getLogger(__name__)
 
+
 def _elt_root() -> Path:
     """Directory holding alembic.ini: the CWD in the container (WORKDIR /app),
     the source tree when running from a host checkout."""
@@ -20,6 +21,7 @@ def _elt_root() -> Path:
         if (candidate / "alembic.ini").exists():
             return candidate
     raise RuntimeError("alembic.ini not found (run from elt/ or the container)")
+
 
 SOURCES = [
     {
@@ -48,6 +50,22 @@ SOURCES = [
         "name": "OpenStreetMap (via Nominatim)",
         "base_url": "https://www.openstreetmap.org/copyright",
         "license": "ODbL — Open Database License; (c) OpenStreetMap contributors",
+        "is_government": False,
+    },
+    {
+        "code": "datadubai_buildings",
+        "name": "data.dubai — DLD building register",
+        "base_url": "https://data.dubai/en/l/459613",
+        "license": "Dubai open data; attribution to Dubai Land Department",
+        "is_government": True,
+    },
+    {
+        "code": "makani",
+        "name": "Makani — Dubai official addressing (find-place, Google-backed)",
+        "base_url": "https://www.makani.ae/",
+        # Building geocodes come from Makani's Google-Places-backed search;
+        # not government-authored geometry, so flagged non-government.
+        "license": "Makani public find-place service; Google Places-derived",
         "is_government": False,
     },
 ]

@@ -81,8 +81,15 @@ class MartRepository(BaseRepository):
 
         rows, has_more = await self._page(stmt, limit, offset)
         return await self._envelope(
-            rows, area_ids, limit, offset, has_more, min_sample, include_future,
-            stmt=stmt, id_col=m.area_id,
+            rows,
+            area_ids,
+            limit,
+            offset,
+            has_more,
+            min_sample,
+            include_future,
+            stmt=stmt,
+            id_col=m.area_id,
         )
 
     async def project_monthly(
@@ -140,8 +147,15 @@ class MartRepository(BaseRepository):
 
         rows, has_more = await self._page(stmt, limit, offset)
         return await self._envelope(
-            rows, project_ids, limit, offset, has_more, min_sample, include_future,
-            stmt=stmt, id_col=m.project_id,
+            rows,
+            project_ids,
+            limit,
+            offset,
+            has_more,
+            min_sample,
+            include_future,
+            stmt=stmt,
+            id_col=m.project_id,
         )
 
     # ----------------------------------------------------------- helpers

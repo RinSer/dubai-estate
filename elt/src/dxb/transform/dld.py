@@ -15,6 +15,7 @@ from typing import Any, Iterator
 
 from dxb_core.models import (
     DimArea,
+    DimBuilding,
     DimDeveloper,
     DimProject,
     DimPropertyType,
@@ -113,6 +114,16 @@ class DimCaches:
             )
             if num is not None
         }
+        # (name_en, area_id) -> building id. Distinct buildings are ~120k, so
+        # caching whole is fine and avoids a per-row SELECT on the hot path.
+        self.buildings: dict[tuple[str, int | None], int] = {
+            (name, area_id): id_
+            for name, area_id, id_ in session.execute(
+                select(DimBuilding.name_en, DimBuilding.area_id, DimBuilding.id)
+            )
+        }
+        # buildings whose project_id we've already backfilled this run.
+        self._building_projects: dict[int, int] = {}
 
     def area(self, name: str | None, name_ar: str | None = None) -> int | None:
         name = norm_name(name)
@@ -184,6 +195,45 @@ class DimCaches:
         if num is not None:
             self.developers[num] = dev.id
         return dev.id
+
+    def building(
+        self,
+        name: str | None,
+        *,
+        area_id: int | None,
+        project_id: int | None = None,
+        name_ar: str | None = None,
+    ) -> int | None:
+        """Resolve/create a dim_building by (name_en, area_id).
+
+        Stubbed here from a transaction's building_name — location and physical
+        attributes are filled later (Makani geocoding, CSV enrichment). Lazily
+        backfills project_id if this row knows it and the stub did not.
+        """
+        name = norm_name(name)
+        if not name:
+            return None
+        key = (name, area_id)
+        if key not in self.buildings:
+            b = DimBuilding(
+                name_en=name,
+                name_ar=to_text(name_ar),
+                area_id=area_id,
+                project_id=project_id,
+            )
+            self.session.add(b)
+            self.session.flush()
+            self.buildings[key] = b.id
+        elif project_id is not None:
+            self._backfill_building_project(self.buildings[key], project_id)
+        return self.buildings[key]
+
+    def _backfill_building_project(self, building_id: int, project_id: int) -> None:
+        if self._building_projects.get(building_id) is None:
+            b = self.session.get(DimBuilding, building_id)
+            if b is not None and b.project_id is None:
+                b.project_id = project_id
+            self._building_projects[building_id] = project_id
 
 
 # --------------------------------------------------------- staging reader

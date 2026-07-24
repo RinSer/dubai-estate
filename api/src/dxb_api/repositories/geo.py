@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from datetime import date
 
-from dxb_core.models import DimArea, DimProject, MartAreaMonthly
+from dxb_core.models import DimArea, DimBuilding, DimProject, MartAreaMonthly
 from sqlalchemy import func, literal, select, text
 
 from dxb_api.repositories.base import BaseRepository
@@ -140,9 +140,13 @@ class GeoRepository(BaseRepository):
     async def projects_geojson(self, *, project_ids: list[int] | None = None) -> dict:
         """Project points.
 
-        Returns an empty-but-valid FeatureCollection today: every
-        `dim_project.location` is NULL until the geolocation enrichment lands.
-        Documented in API_DESIGN.md §7 rather than left as a surprise.
+        Each feature carries `geo_match_method` + `is_precise` and, for
+        building-derived points, `geo_building_count` / `geo_spread_m`. Precise
+        methods are the Makani building rollup (`building_point`,
+        `building_centroid`, `master_of_children`) and `nominatim_validated`;
+        `area_centroid` is the coarse fallback every project in an area shares.
+        A large `geo_spread_m` means a big footprint — render an area label, not
+        a precise dot. See docs/PROJECT_GEO_ENRICHMENT.md.
         """
         project_ids = self._check_id_set(project_ids, "project_ids")
         stmt = select(
@@ -150,6 +154,9 @@ class GeoRepository(BaseRepository):
             DimProject.name_en,
             DimProject.area_id,
             DimProject.status,
+            DimProject.geo_match_method,
+            DimProject.geo_building_count,
+            DimProject.geo_spread_m,
             func.ST_AsGeoJSON(DimProject.location).label("geometry"),
         ).where(DimProject.location.isnot(None))
         if project_ids:
@@ -168,6 +175,71 @@ class GeoRepository(BaseRepository):
                         "name_en": r.name_en,
                         "area_id": r.area_id,
                         "status": r.status,
+                        # Coarse 'area_centroid' vs precise building/nominatim
+                        # methods — style differently; geo_spread_m tells a
+                        # client when even a "precise" project is really a big
+                        # footprint.
+                        "geo_match_method": r.geo_match_method,
+                        "is_precise": r.geo_match_method != "area_centroid"
+                        and r.geo_match_method is not None,
+                        "geo_building_count": r.geo_building_count,
+                        "geo_spread_m": (
+                            float(r.geo_spread_m)
+                            if r.geo_spread_m is not None
+                            else None
+                        ),
+                    },
+                }
+                for r in rows
+            ],
+        }
+
+    async def buildings_geojson(
+        self,
+        *,
+        area_id: int | None = None,
+        project_id: int | None = None,
+        building_ids: list[int] | None = None,
+    ) -> dict:
+        """Makani-geocoded buildings as GeoJSON points, for building-level zoom.
+
+        Only precise (`makani_validated`) buildings have a location, so this
+        never returns a coarse point. Scope with `area_id` (the common case:
+        the user zoomed into one area) to keep the payload bounded.
+        """
+        building_ids = self._check_id_set(building_ids, "building_ids")
+        stmt = select(
+            DimBuilding.id,
+            DimBuilding.name_en,
+            DimBuilding.area_id,
+            DimBuilding.project_id,
+            DimBuilding.floors,
+            DimBuilding.rooms,
+            func.ST_AsGeoJSON(DimBuilding.location).label("geometry"),
+        ).where(DimBuilding.location.isnot(None))
+        if area_id is not None:
+            stmt = stmt.where(DimBuilding.area_id == area_id)
+        if project_id is not None:
+            stmt = stmt.where(DimBuilding.project_id == project_id)
+        if building_ids:
+            stmt = stmt.where(DimBuilding.id.in_(building_ids))
+
+        rows = (await self._session.execute(stmt)).all()
+        return {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "id": r.id,
+                    "geometry": json.loads(r.geometry),
+                    "properties": {
+                        "building_id": r.id,
+                        "name_en": r.name_en,
+                        "area_id": r.area_id,
+                        "project_id": r.project_id,
+                        "floors": r.floors,
+                        "rooms": r.rooms,
+                        "is_precise": True,  # only makani_validated has a point
                     },
                 }
                 for r in rows

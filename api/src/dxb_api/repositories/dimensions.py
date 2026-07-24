@@ -129,6 +129,9 @@ class DimensionRepository(BaseRepository):
             DimProject.percent_completed,
             DimProject.cnt_units,
             DimProject.completion_date,
+            DimProject.geo_match_method,
+            DimProject.geo_building_count,
+            DimProject.geo_spread_m,
             DimProject.location.isnot(None).label("has_location"),
         )
 
@@ -210,6 +213,9 @@ class DimensionRepository(BaseRepository):
             "percent_completed": r.percent_completed,
             "cnt_units": r.cnt_units,
             "completion_date": r.completion_date,
+            "geo_match_method": r.geo_match_method,
+            "geo_building_count": r.geo_building_count,
+            "geo_spread_m": r.geo_spread_m,
             "has_geo_data": bool(r.has_location),
             "has_boundary": False,
         }

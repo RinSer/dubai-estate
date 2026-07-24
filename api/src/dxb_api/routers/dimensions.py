@@ -4,10 +4,11 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Path, Query
 
-from dxb_api.deps import DimensionRepoDep, PrincipalDep
+from dxb_api.deps import BuildingRepoDep, DimensionRepoDep, PrincipalDep
 from dxb_api.schemas.common import Page
 from dxb_api.schemas.dimensions import (
     Area,
+    Building,
     Developer,
     Project,
     PropertyType,
@@ -94,6 +95,34 @@ async def list_projects(
 @router.get("/projects/{project_id}", response_model=Project, summary="Get one project")
 async def get_project(repo: DimensionRepoDep, _: PrincipalDep, project_id: int):
     return await repo.get_project(project_id)
+
+
+@router.get("/buildings", response_model=Page[Building], summary="List buildings")
+async def list_buildings(
+    repo: BuildingRepoDep,
+    _: PrincipalDep,
+    q: Annotated[str | None, _Q] = None,
+    area_id: int | None = None,
+    project_id: int | None = None,
+    has_geo_data: Annotated[bool | None, _HAS_GEO] = None,
+    limit: int | None = None,
+    offset: int | None = None,
+):
+    return await repo.list_buildings(
+        q=q,
+        area_id=area_id,
+        project_id=project_id,
+        has_geo_data=has_geo_data,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/buildings/{building_id}", response_model=Building, summary="Get one building"
+)
+async def get_building(repo: BuildingRepoDep, _: PrincipalDep, building_id: int):
+    return await repo.get_building(building_id)
 
 
 @router.get("/developers", response_model=Page[Developer], summary="List developers")

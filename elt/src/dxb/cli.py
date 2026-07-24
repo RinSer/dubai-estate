@@ -149,10 +149,13 @@ def import_csv(
 
 @app.command("import-datadubai")
 def import_datadubai(
-    dataset: str = typer.Argument(help="transactions | rents | all"),
+    dataset: str = typer.Argument(help="transactions | rents | buildings | all"),
 ) -> None:
-    """One-off historical import from the data.dubai CSV exports in data/raw
-    (see docs/DATADUBAI_REBUILD_PLAN.md). Not part of the daily scheduler."""
+    """One-off / recurring import from the data.dubai CSV exports in data/raw
+    (see docs/DATADUBAI_REBUILD_PLAN.md). Not part of the daily scheduler.
+    Drop fresh monthly files in data/raw and re-run to top up — transactions,
+    rents and the building register are all handled here."""
+    from dxb.datadubai.buildings import import_buildings
     from dxb.datadubai.importer import import_dataset
     from dxb.datadubai.pipeline import import_all
     from dxb.datadubai.sources import DATASETS
@@ -162,11 +165,38 @@ def import_datadubai(
     with get_session() as session:
         if dataset == "all":
             report = import_all(session, settings.source_url)
+        elif dataset == "buildings":
+            # Attribute register, not facts — its own importer.
+            report = import_buildings(session, settings.source_url)
         elif dataset in DATASETS:
             report = import_dataset(session, dataset, settings.source_url)
         else:
             raise typer.BadParameter(f"unknown dataset {dataset!r}")
     typer.echo(report)
+
+
+@app.command("enrich-buildings")
+def enrich_buildings_cmd(
+    all_: bool = typer.Option(
+        False, "--all", help="Reconsider every building, not just newly-seen ones."
+    ),
+    limit: int = typer.Option(
+        0, "--limit", help="Cap buildings attempted in this run (0 = all)."
+    ),
+) -> None:
+    """Makani-geocode buildings, then roll their points up into project
+    locations (docs/PROJECT_GEO_ENRICHMENT.md §6). The daily pipeline runs this
+    incrementally for new buildings; this command is the full historical sweep
+    (throttled ~0.4s/call, so chunk it with --limit)."""
+    from dxb.db.engine import get_session
+    from dxb.geo.buildings import enrich_buildings, place_projects_from_buildings
+
+    with get_session() as session:
+        buildings = enrich_buildings(
+            session, missing_only=not all_, limit=limit or None
+        )
+        projects = place_projects_from_buildings(session)
+    typer.echo({"buildings": buildings, "projects": projects})
 
 
 @app.command("set-cutovers")
@@ -194,6 +224,34 @@ def enrich_geo() -> None:
     typer.echo(
         {k: v for k, v in report.items() if k != "details"}
     )  # details dumped separately for docs, not the terminal
+
+
+@app.command("enrich-project-geo")
+def enrich_project_geo(
+    precision: bool = typer.Option(
+        False,
+        "--precision",
+        help="Also run the throttled Nominatim precision upgrade (~1 req/s).",
+    ),
+    limit: int = typer.Option(
+        0, "--limit", help="Cap projects attempted in the precision pass (0 = all)."
+    ),
+) -> None:
+    """Project geolocation (see docs/PROJECT_GEO_ENRICHMENT.md).
+
+    Default: just the instant area-centroid backbone (pure SQL, ~97%
+    coverage). The daily/backfill pipelines already run this automatically for
+    newly-seen projects. Pass --precision to also run the Nominatim upgrade,
+    which validated only ~10% in probing and is slow, so it is opt-in and
+    chunkable via --limit."""
+    from dxb.db.engine import get_session
+    from dxb.osm_geo.projects import backfill_area_centroids, enrich_project_points
+
+    with get_session() as session:
+        report = {"area_centroid_filled": backfill_area_centroids(session)}
+        if precision:
+            report["precision"] = enrich_project_points(session, limit=limit or None)
+    typer.echo(report)
 
 
 @app.command()

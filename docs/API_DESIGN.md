@@ -200,9 +200,13 @@ rendered.
   fetched an unfiltered list can still decide polygon-vs-pin per entity.
 - On `/geo/*` the filter is implicit (those endpoints only return geometry).
 
-> **Current reality for projects**: `dim_project.location` is entirely NULL, so
-> `has_geo_data=true` returns an empty set for projects until the geolocation
-> enrichment (researched separately) lands. Documented rather than surprising.
+> **Current reality for projects**: ~74% of projects now have a point
+> (`dim_project.location`) via the geolocation enrichment
+> ([PROJECT_GEO_ENRICHMENT.md](PROJECT_GEO_ENRICHMENT.md)). Most are the coarse
+> `area_centroid` backbone; a minority are precise. Responses carry
+> `geo_match_method` so a client distinguishes the two — `has_geo_data=true`
+> now returns those ~74%, not an empty set. Projects still have **no boundary**,
+> so `geo_level=polygon` is empty for them by construction.
 
 ### Fuzzy entity resolution (`?q=`) — used for every named entity
 
@@ -290,8 +294,9 @@ filters actually applied.
 - `GET /geo/areas` — GeoJSON FeatureCollection: `boundary` (or `centroid`
   fallback), with current metrics as feature properties so the map can style
   choropleths in one request
-- `GET /geo/projects` — points (**pending** the geolocation work now being
-  researched separately; ships empty-but-valid until then)
+- `GET /geo/projects` — points, each with `geo_match_method` + an `is_precise`
+  flag so the map styles precise pins differently from the coarse area-centroid
+  backbone (see [PROJECT_GEO_ENRICHMENT.md](PROJECT_GEO_ENRICHMENT.md))
 
 ## 7a. Analytics methodology — and its limits
 

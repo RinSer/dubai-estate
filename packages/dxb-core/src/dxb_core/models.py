@@ -199,11 +199,82 @@ class DimProject(TimestampMixin, Base):
     cnt_buildings: Mapped[int | None] = mapped_column(Integer)
     description: Mapped[str | None] = mapped_column(Text)
     location: Mapped[Any | None] = mapped_column(Geography("POINT", srid=4326))
+    # Provenance for `location`, mirroring dim_area. The method is the
+    # confidence signal, not decoration: 'nominatim_validated' is a real point
+    # confirmed to fall inside the project's area; 'area_centroid' is a coarse
+    # fallback shared by every project in that area. A map must never present
+    # the latter as a precise location — see docs/PROJECT_GEO_ENRICHMENT.md.
+    geo_source_id: Mapped[int | None] = mapped_column(ForeignKey("dim_source.id"))
+    # building_point | building_centroid | master_of_children (Makani, precise)
+    # | nominatim_validated (OSM name-match) | area_centroid (coarse fallback)
+    geo_match_method: Mapped[str | None] = mapped_column(Text)
+    # Project-level confidence for a building-derived location (docs
+    # PROJECT_GEO_ENRICHMENT §6): how many validated buildings backed the
+    # placement, and how dispersed they are. A large spread means the project
+    # is a big footprint, not a precise dot — the map uses this to decide
+    # between a pin and an area label.
+    geo_building_count: Mapped[int | None] = mapped_column(Integer)
+    geo_spread_m: Mapped[Decimal | None] = mapped_column(Numeric(10, 1))
     source_id: Mapped[int | None] = mapped_column(ForeignKey("dim_source.id"))
     source_url: Mapped[str | None] = mapped_column(Text)
 
 
 Index("ix_project_area", DimProject.area_id)
+
+
+class DimBuilding(TimestampMixin, Base):
+    """A physical building — the addressable unit that carries a precise
+    location (docs/PROJECT_GEO_ENRICHMENT.md §6).
+
+    Populated from two sources with different strengths:
+      * transactions   -> the searchable `name_en` (e.g. 'LAKE TERRACE') that
+                          Makani geocodes; the building's project link.
+      * data.dubai building CSVs -> the physical attributes below, joined by
+                          (project_name + area) since the CSVs carry no clean
+                          building name (only codes). See BUILDING_CSV_ANALYSIS.
+
+    `location` is filled by Makani (Google-backed), accepted only if it falls
+    inside the building's area (containment validation). The method column is
+    the precise-vs-coarse signal, same discipline as dim_area/dim_project.
+    """
+
+    __tablename__ = "dim_building"
+    __table_args__ = (
+        UniqueConstraint("name_en", "area_id", name="ux_building_name_area"),
+        Index("ix_building_project", "project_id"),
+        Index("ix_building_area", "area_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    name_en: Mapped[str] = mapped_column(Text)  # canonical UPPER-cased
+    name_ar: Mapped[str | None] = mapped_column(Text)
+    area_id: Mapped[int | None] = mapped_column(ForeignKey("dim_area.id"))
+    # Nullable FK: the dominant project seen for this building in transactions.
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("dim_project.id"))
+
+    # --- geolocation (Makani) ---
+    location: Mapped[Any | None] = mapped_column(Geography("POINT", srid=4326))
+    geo_source_id: Mapped[int | None] = mapped_column(ForeignKey("dim_source.id"))
+    # makani_validated | makani_unvalidated | manual
+    geo_match_method: Mapped[str | None] = mapped_column(Text)
+    makani: Mapped[str | None] = mapped_column(Text)  # returned Makani no./community
+
+    # --- physical attributes, enriched from the data.dubai building CSVs.
+    # All nullable: a building stubbed from a transaction has only name+area
+    # until the CSV enrichment (or never, if it is not in the CSVs).
+    built_up_area: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    floors: Mapped[int | None] = mapped_column(Integer)
+    flats: Mapped[int | None] = mapped_column(Integer)
+    offices: Mapped[int | None] = mapped_column(Integer)
+    shops: Mapped[int | None] = mapped_column(Integer)
+    car_parks: Mapped[int | None] = mapped_column(Integer)
+    elevators: Mapped[int | None] = mapped_column(Integer)
+    swimming_pools: Mapped[int | None] = mapped_column(Integer)
+    is_free_hold: Mapped[bool | None] = mapped_column(Boolean)
+    building_status: Mapped[str | None] = mapped_column(Text)
+    completion_date: Mapped[date | None] = mapped_column(Date)
+    is_green_building: Mapped[bool | None] = mapped_column(Boolean)
+    rooms: Mapped[str | None] = mapped_column(Text)  # villa-typical, e.g. '3 B/R'
 
 
 class DimPropertyType(TimestampMixin, Base):
@@ -289,6 +360,7 @@ class FactSaleTransaction(TimestampMixin, Base):
     parking: Mapped[str | None] = mapped_column(Text)
     area_id: Mapped[int] = mapped_column(ForeignKey("dim_area.id"))
     project_id: Mapped[int | None] = mapped_column(ForeignKey("dim_project.id"))
+    building_id: Mapped[int | None] = mapped_column(ForeignKey("dim_building.id"))
     parcel_id: Mapped[int | None] = mapped_column(BigInteger)
     actual_area_m2: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     amount_aed: Mapped[Decimal] = mapped_column(Numeric(14, 2))
@@ -349,6 +421,7 @@ class FactRentContract(TimestampMixin, Base):
     rooms: Mapped[str | None] = mapped_column(Text)
     area_id: Mapped[int] = mapped_column(ForeignKey("dim_area.id"))
     project_id: Mapped[int | None] = mapped_column(ForeignKey("dim_project.id"))
+    building_id: Mapped[int | None] = mapped_column(ForeignKey("dim_building.id"))
     parcel_id: Mapped[int | None] = mapped_column(BigInteger)
     actual_area_m2: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     # Per property (source total / no_of_prop) — see class docstring.
