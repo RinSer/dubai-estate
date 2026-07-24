@@ -6,7 +6,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from dxb.db.models import DimArea
+from dxb_core.models import DimArea
+
 from dxb.osm_geo import enrich
 
 

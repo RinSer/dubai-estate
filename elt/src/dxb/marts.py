@@ -25,10 +25,9 @@ from __future__ import annotations
 
 import logging
 
+from dxb_core.models import EtlSourceCutover
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-
-from dxb.db.models import EtlSourceCutover
 
 log = logging.getLogger(__name__)
 

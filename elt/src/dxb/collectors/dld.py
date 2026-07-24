@@ -11,11 +11,11 @@ import json
 import logging
 from datetime import date, datetime, timedelta, timezone
 
+from dxb_core.models import EtlWatermark, StgRaw
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from dxb.collectors.client import DldClient
-from dxb.db.models import EtlWatermark, StgRaw
 
 log = logging.getLogger(__name__)
 

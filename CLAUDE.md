@@ -15,16 +15,66 @@ recorded there with the evidence that drove them, not just the conclusion.
 
 ## Stack
 
+Shared across all packages:
 - **Python 3.12+**, managed with **`uv`** — not pip, not poetry, not bare `python`.
-- **SQLAlchemy 2.0** (declarative `Mapped[...]` style) + **Alembic** for migrations.
-- **PostgreSQL 17 + PostGIS** (`postgis/postgis:17-3.5`), geography columns for spatial data.
-- **Typer** for the CLI (`dxb ...`), **Docker Compose** for local orchestration.
-- **pytest** + **pytest-mock** for tests, **ruff** for lint + format.
-- **httpx** for HTTP clients, **tenacity** for retries, **APScheduler** for the daily job.
+- **SQLAlchemy 2.0** (declarative `Mapped[...]` style); **Alembic** migrations
+  live in `elt/` only — the API never migrates, it only reads.
+- **PostgreSQL 17 + PostGIS** (`postgis/postgis:17-3.5`), geography columns for
+  spatial data. **psycopg3** as the driver everywhere (sync in ELT, async in API).
+- **pytest** for tests, **ruff** for lint + format, **Docker Compose** for
+  orchestration (`db`, `elt`, `api`).
 
-All of this lives under `elt/`. Run every Python command from inside that
-directory via `uv run ...` (e.g. `uv run pytest -q`, `uv run ruff check .`) —
-`uv` resolves the project's own `.venv` regardless of what's on the host PATH.
+ELT-only: **Typer** CLI (`dxb ...`), **httpx**, **tenacity**, **APScheduler**.
+
+API-only: **FastAPI** + **uvicorn**, **Pydantic** response models,
+**pytest-asyncio**, **argon2-cffi** + **PyJWT/cryptography** for auth.
+
+Run every Python command from inside the owning package directory via
+`uv run ...` (e.g. `uv run pytest -q`, `uv run ruff check .`) — `uv` resolves
+that project's own `.venv` regardless of what's on the host PATH.
+
+## Repository layout and the sync/async split
+
+Three Python packages, deliberately separated:
+
+| Package | Role | Concurrency |
+|---|---|---|
+| `packages/dxb-core/` | Shared SQLAlchemy **table definitions only** | n/a — execution-agnostic |
+| `elt/` | Data collection & loading (writes) | **strictly synchronous** |
+| `api/` | Read-only FastAPI analytics service | **strictly async / asyncio** |
+
+**This split is a hard rule, not a preference:**
+
+- **All ELT code is sync.** Plain `def`, sync `Session`, sync psycopg. Do not
+  introduce `async def`, `asyncio`, or async SQLAlchemy anywhere under `elt/`.
+- **All FastAPI code is async.** `async def` endpoints and repository methods,
+  `AsyncSession`, `create_async_engine`, psycopg3 in async mode. Do not
+  introduce blocking sync DB calls under `api/`.
+- `api/` must **never import from `elt/`** — they share only `dxb-core`.
+
+This works because `dxb-core` exposes nothing but table metadata, which has no
+opinion about how it is executed: the same models drive a sync `Session` in the
+ELT and an `AsyncSession` in the API. See docs/API_DESIGN.md §7b.
+
+### Two traps this creates — both load-bearing
+
+1. **Never add `relationship()` to the shared models.** The models in
+   `dxb-core` currently define only columns and FK constraints, with **no ORM
+   relationships**. That is what makes them safe to use from async code: an
+   implicit lazy load inside an `AsyncSession` raises `MissingGreenlet` at
+   runtime. If a relationship ever becomes genuinely necessary, every async
+   query touching it must eager-load (`selectinload`/`joinedload`) — so add it
+   deliberately, with a comment, never casually. Keep a comment saying so in
+   `dxb-core/models.py`.
+
+2. **Never call blocking or CPU-bound code inside an `async def`.** The concrete
+   case is **argon2 password hashing in `/auth/login`, which takes ~50–100 ms by
+   design** and will stall the event loop. It must be offloaded with
+   `anyio.to_thread.run_sync(...)`, with an inline comment explaining why —
+   this failure mode shows up as a mysterious latency spike under concurrent
+   load, not as an error, so it will not be caught by tests or review unless the
+   reason is written down at the call site. The same applies to any future
+   CPU-heavy work (hashing, image work, large serialization).
 
 ## Required workflow for every change
 
@@ -39,11 +89,16 @@ directory via `uv run ...` (e.g. `uv run pytest -q`, `uv run ruff check .`) —
    before the change is considered done**: `uv run pytest -q` from `elt/`.
    A change that breaks an unrelated existing test is not finished.
 3. **Lint clean**: `uv run ruff format .` then `uv run ruff check .` (add
-   `--fix` for auto-fixable issues) from `elt/`. The tracked pre-commit hook
-   (`.githooks/pre-commit`, activate once per clone with
-   `git config core.hooksPath .githooks`) enforces `ruff check` and blocks
-   commits that fail it — don't rely on it as your only check; run ruff
-   yourself before you consider a change finished.
+   `--fix` for auto-fixable issues), run from **each** package you touched
+   (`elt/`, `api/`, `packages/dxb-core/` — each is its own ruff config root).
+   `.pre-commit-config.yaml` has one `ruff check` hook per package and enforces
+   them on commit; activate it once per clone with
+   `uv run --project elt pre-commit install`. Two gotchas learned the hard way:
+   pre-commit only sees **git-tracked** files, so a brand-new package's hook
+   silently skips until its files are `git add`ed; and **ruff respects
+   `.gitignore`**, which is how the shared `models.py` went unlinted for weeks
+   while it sat under a gitignored `db/` path. Don't rely on the hook as your
+   only check — run ruff yourself before considering a change finished.
 4. **If you touched anything Docker-relevant** (source code, dependencies,
    the Dockerfile), rebuild and verify tests pass *inside the container too*,
    not just on the host:
@@ -59,8 +114,20 @@ directory via `uv run ...` (e.g. `uv run pytest -q`, `uv run ruff check .`) —
    sequence in `elt/alembic/versions/` (`0001`, `0002`, `0003`, ...). Never
    hand-edit the live schema without a migration backing it.
 
+6. **Both packages must be green**, not just the one you touched:
+   `uv run pytest -q` from `elt/` (175 tests) *and* from `api/` (76). The
+   `packages/dxb-core` schema is shared, so an ELT model change can break the
+   API silently — the API has no migrations of its own to catch it.
+
 ## Conventions worth knowing before you're surprised by them
 
+- **Two Docker build contexts are the repo root**, not the service directory,
+  because both images install `packages/dxb-core`. That is why `elt/Dockerfile`
+  and `api/Dockerfile` use `elt/`- and `api/`-prefixed `COPY` paths, and why
+  `docker-compose.yml` sets `context: .` with an explicit `dockerfile:`.
+- **Argon2 hashes contain `$`, which Docker Compose interpolates** when it
+  loads `.env`. Every `$` in `DXB_API_USERS` must be doubled to `$$` there or
+  login fails with a confusing "malformed hash". `.env.example` says so.
 - **Provenance is load-bearing, not decorative.** Every fact row carries
   `source_id` / `source_url` / `source_ref`; every `dim_source` row has an
   `is_government` flag so queries can filter to verified government data

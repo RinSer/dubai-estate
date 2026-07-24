@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Dubai real estate analytics — ELT service (DLD open data -> Postgres star schema)"
 requires-python = ">=3.12"
 dependencies = [
+    "dxb-core",
     "httpx>=0.27",
     "sqlalchemy>=2.0.36",
     "psycopg[binary]>=3.2",
@@ -13,6 +14,9 @@ dependencies = [
     "typer>=0.15",
     "apscheduler>=3.10,<4",
 ]
+
+[tool.uv.sources]
+dxb-core = { path = "../packages/dxb-core", editable = true }
 
 [project.scripts]
 dxb = "dxb.cli:app"

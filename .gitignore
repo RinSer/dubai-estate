@@ -3,5 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
-db/
-data/
+# Root-anchored on purpose: an unanchored `db/` also matched
+# elt/src/dxb/db/, silently keeping the entire schema out of git.
+/db/
+/data/

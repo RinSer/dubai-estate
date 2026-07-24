@@ -12,8 +12,9 @@ Revises:
 Create Date: 2026-07-18
 """
 
+from dxb_core.models import Base
+
 from alembic import op
-from dxb.db.models import Base
 
 revision = "0001"
 down_revision = None

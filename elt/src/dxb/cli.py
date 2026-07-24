@@ -199,14 +199,15 @@ def enrich_geo() -> None:
 @app.command()
 def stats() -> None:
     """Row counts and a quick market sanity report."""
-    from dxb.db.engine import get_session
-    from dxb.db.models import (
+    from dxb_core.models import (
         DimArea,
         DimProject,
         FactRentContract,
         FactSaleTransaction,
         StgRaw,
     )
+
+    from dxb.db.engine import get_session
 
     with get_session() as session:
         for label, model in [

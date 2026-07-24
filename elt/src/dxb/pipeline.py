@@ -15,6 +15,7 @@ import time
 import traceback
 from datetime import date, datetime, timezone
 
+from dxb_core.models import EtlRun
 from tenacity import (
     RetryError,
     Retrying,
@@ -33,7 +34,6 @@ from dxb.collectors.dld import (
 )
 from dxb.config import get_settings
 from dxb.db.engine import get_session, source_id
-from dxb.db.models import EtlRun
 from dxb.marts import rebuild_marts
 from dxb.osm_geo.enrich import enrich_missing_areas
 from dxb.transform.dld import transform_all

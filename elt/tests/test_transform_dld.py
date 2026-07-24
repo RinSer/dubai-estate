@@ -9,8 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from conftest import StubCaches, insert_value_rows
+from dxb_core.models import FactSaleTransaction
 
-from dxb.db.models import FactSaleTransaction
 from dxb.transform import dld as tr
 
 

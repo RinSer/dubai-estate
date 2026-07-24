@@ -20,17 +20,17 @@ import logging
 import re
 from datetime import date, datetime, timezone
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
-
-from dxb.datadubai.sources import DATASETS, files_for
-from dxb.db.engine import source_id as resolve_source_id
-from dxb.db.models import (
+from dxb_core.models import (
     EtlSourceCutover,
     EtlWatermark,
     FactRentContract,
     FactSaleTransaction,
 )
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from dxb.datadubai.sources import DATASETS, files_for
+from dxb.db.engine import source_id as resolve_source_id
 
 log = logging.getLogger(__name__)
 

@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import logging
 
+from dxb_core.models import DimArea
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from dxb.db.engine import source_id
-from dxb.db.models import DimArea
 from dxb.osm_geo.geojson_wkt import geojson_to_multipolygon_wkt
 from dxb.osm_geo.matcher import match_area
 from dxb.osm_geo.nominatim import NominatimClient

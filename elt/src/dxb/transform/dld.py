@@ -13,11 +13,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
-from sqlalchemy import func, or_, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
-
-from dxb.db.models import (
+from dxb_core.models import (
     DimArea,
     DimDeveloper,
     DimProject,
@@ -26,6 +22,10 @@ from dxb.db.models import (
     FactSaleTransaction,
     StgRaw,
 )
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import Session
+
 from dxb.transform.keys import txn_key_from_gateway
 
 log = logging.getLogger(__name__)

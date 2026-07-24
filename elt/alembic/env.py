@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from dxb_core.models import Base
 from sqlalchemy import create_engine
 
 from alembic import context
 from dxb.config import get_settings
-from dxb.db.models import Base
 
 target_metadata = Base.metadata
 

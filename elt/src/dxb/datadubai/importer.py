@@ -13,12 +13,12 @@ import csv
 import logging
 from pathlib import Path
 
+from dxb_core.models import FactRentContract, FactSaleTransaction
 from sqlalchemy.orm import Session
 
 from dxb.datadubai import transform as dd
 from dxb.datadubai.sources import DATASETS, files_for
 from dxb.db.engine import source_id as resolve_source_id
-from dxb.db.models import FactRentContract, FactSaleTransaction
 from dxb.transform.dld import DimCaches, _upsert_facts
 
 log = logging.getLogger(__name__)

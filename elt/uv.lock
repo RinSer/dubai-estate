@@ -93,6 +93,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "apscheduler" },
+    { name = "dxb-core" },
     { name = "geoalchemy2" },
     { name = "httpx" },
     { name = "psycopg", extra = ["binary"] },
@@ -119,6 +120,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
     { name = "apscheduler", specifier = ">=3.10,<4" },
+    { name = "dxb-core", editable = "../packages/dxb-core" },
     { name = "geoalchemy2", specifier = ">=0.15" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
@@ -136,6 +138,21 @@ dev = [
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-mock", specifier = ">=3.14" },
     { name = "ruff", specifier = ">=0.15.22" },
+]
+
+[[package]]
+name = "dxb-core"
+version = "0.1.0"
+source = { editable = "../packages/dxb-core" }
+dependencies = [
+    { name = "geoalchemy2" },
+    { name = "sqlalchemy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "geoalchemy2", specifier = ">=0.15" },
+    { name = "sqlalchemy", specifier = ">=2.0.36" },
 ]
 
 [[package]]
