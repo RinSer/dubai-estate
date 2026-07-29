@@ -505,3 +505,51 @@ class MartProjectMonthly(TimestampMixin, Base):
     rent_cnt: Mapped[int | None] = mapped_column(Integer)
     rent_median_annual_m2: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     gross_yield_pct: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+
+
+class MartBuildingSummary(TimestampMixin, Base):
+    """Building price summary — deliberately NOT a monthly grain.
+
+    Measured before building it (docs/BUILDING_MART_ANALYSIS.md): at building
+    level a monthly grain collapses — 42% of (building, month, usage) cells hold
+    exactly ONE sale, and only ~4% clear the default min_sample of 20. A monthly
+    mart would have been mostly single-sale "medians" read as market rates.
+
+    So this summarises instead: a trailing-12-month price level, lifetime
+    coverage, and a coarse CAGR that stays **NULL** unless the sample genuinely
+    supports it. A null we can explain honestly; a noisy number we cannot.
+
+    Sales only, permanently: `fact_rent_contract.building_id` is NULL on all
+    10.3M rows because the data.dubai rent export carries no building name.
+    There is nothing to join on, so rent / yield / total-return columns cannot
+    exist here — see the analysis doc §2 and §6.
+    """
+
+    __tablename__ = "mart_building_summary"
+
+    building_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("dim_building.id"), primary_key=True
+    )
+    usage: Mapped[str] = mapped_column(Text, primary_key=True)
+
+    # --- trailing 12 months: the current price level ---
+    sale_cnt_12m: Mapped[int | None] = mapped_column(Integer)
+    median_price_m2_12m: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    p25_price_m2_12m: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    p75_price_m2_12m: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+
+    # --- lifetime coverage: what we know at all ---
+    sale_cnt_total: Mapped[int] = mapped_column(Integer)
+    median_price_m2_all: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    first_sale: Mapped[date | None] = mapped_column(Date)
+    last_sale: Mapped[date | None] = mapped_column(Date)
+
+    # --- coarse trend; NULL unless span and both anchors clear their floors ---
+    price_m2_cagr_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    cagr_years: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    cagr_sample_size: Mapped[int | None] = mapped_column(Integer)
+
+    # strong | thin | insufficient — reliability of the 12-month price level.
+    # Independent of the CAGR guard: a building can have a trustworthy current
+    # price and no computable trend, or the reverse.
+    sample_tier: Mapped[str] = mapped_column(Text)

@@ -86,16 +86,22 @@ def test_rebuild_marts_injects_clauses_and_params(monkeypatch):
 
     report = marts.rebuild_marts(session)
 
-    # 2 TRUNCATEs + 2 INSERTs
-    assert session.execute.call_count == 4
+    # 3 TRUNCATEs + 3 INSERTs (area, project, building)
+    assert session.execute.call_count == 6
     insert_calls = [c for c in session.execute.call_args_list if len(c[0]) > 1]
-    assert len(insert_calls) == 2
-    for call in insert_calls:
+    assert len(insert_calls) == 3
+    for call in insert_calls[:2]:  # area, project: both sides bounded
         sql = str(call[0][0])
         params = call[0][1]
         assert ":src_sale" in sql and ":src_rent" in sql
         assert params["src_sale"] == 1 and params["cut_sale"] == date(2026, 7, 20)
         assert params["src_rent"] == 2 and params["cut_rent"] == date(2026, 7, 8)
+    building_sql, building_params = insert_calls[2][0]
+    building_sql = str(building_sql)
+    # buildings are sales-only: rent precedence never applies
+    assert ":src_sale" in building_sql and ":src_rent" not in building_sql
+    assert building_params["src_sale"] == 1
+    assert "src_rent" not in building_params
     assert report["cutover_applied"] == {"sales": True, "rents": True}
 
 
@@ -115,3 +121,46 @@ def test_mart_sql_uses_start_date_for_rents_not_registration_date():
     for sql in (marts._AREA_MART_SQL, marts._PROJECT_MART_SQL):
         assert "date_trunc('month', f.start_date)" in sql
         assert "registration_date" not in sql
+
+
+# --------------------------------------------------- building summary mart
+
+
+def test_building_mart_sql_is_sales_only():
+    """Rents never reach buildings (0 of 10.3M rows carry building_id) — the
+    mart must not reference fact_rent_contract at all."""
+    assert "fact_rent_contract" not in marts._BUILDING_MART_SQL
+    assert "fact_sale_transaction" in marts._BUILDING_MART_SQL
+
+
+def test_building_mart_sql_groups_by_building_and_usage_not_month():
+    """Deliberately not a monthly grain (analysis doc §3: 42% single-sale
+    cells at monthly grain) — no date_trunc('month', ...) anywhere."""
+    assert "date_trunc('month'" not in marts._BUILDING_MART_SQL
+
+
+def test_rebuild_marts_report_includes_building_mart(monkeypatch):
+    session = _session_with_cutover({})
+    session.execute.return_value.rowcount = 7
+
+    report = marts.rebuild_marts(session)
+
+    assert report["mart_building_summary"] == 7
+    truncate_calls = [c for c in session.execute.call_args_list if len(c[0]) == 1]
+    assert any(
+        "truncate mart_building_summary" in str(c[0][0]).lower() for c in truncate_calls
+    )
+
+
+def test_rebuild_marts_passes_cagr_and_tier_constants_as_params():
+    session = _session_with_cutover({})
+    session.execute.return_value.rowcount = 0
+
+    marts.rebuild_marts(session)
+
+    insert_calls = [c for c in session.execute.call_args_list if len(c[0]) > 1]
+    building_params = insert_calls[-1][0][1]
+    assert building_params["cagr_min_years"] == marts._CAGR_MIN_YEARS
+    assert building_params["cagr_anchor_n"] == marts._CAGR_ANCHOR_MIN_N
+    assert building_params["tier_strong"] == marts._TIER_STRONG_N
+    assert building_params["tier_thin"] == marts._TIER_THIN_N
