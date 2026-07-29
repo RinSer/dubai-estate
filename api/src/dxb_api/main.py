@@ -59,6 +59,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version="0.1.0",
         description=DESCRIPTION,
         lifespan=lifespan,
+        # See Settings.root_path: unset locally/in tests, "/api" behind nginx.
+        root_path=settings.root_path,
     )
 
     @app.exception_handler(ApiError)

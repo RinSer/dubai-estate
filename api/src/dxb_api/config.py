@@ -73,6 +73,16 @@ class Settings:
     # ambiguous -> 422 with candidates, rather than silently picking one.
     trgm_ambiguity_margin: float = 0.05
 
+    # Set to "/api" in compose (docker-compose.yml), empty everywhere else.
+    # nginx strips the /api prefix before forwarding (nginx.conf's `rewrite`),
+    # so this app only ever *receives* unprefixed paths — root_path changes
+    # nothing about routing. It exists purely so FastAPI's generated URLs
+    # (the docs page's embedded openapi.json fetch, the openapi spec's
+    # `servers` entry) point back through the proxy instead of at the
+    # container's own unprefixed root, which 404s from outside nginx. See
+    # https://fastapi.tiangolo.com/advanced/behind-a-proxy/.
+    root_path: str = ""
+
     @property
     def dsn(self) -> str:
         return (
@@ -174,6 +184,7 @@ def build_settings() -> Settings:
         default_min_sample=int(_get("DXB_DEFAULT_MIN_SAMPLE", "20")),
         trgm_threshold=float(_get("DXB_TRGM_THRESHOLD", "0.30")),
         trgm_ambiguity_margin=float(_get("DXB_TRGM_AMBIGUITY_MARGIN", "0.05")),
+        root_path=_get("DXB_API_ROOT_PATH", ""),
     )
 
 

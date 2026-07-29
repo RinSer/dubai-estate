@@ -132,12 +132,37 @@ REST API for a high-throughput non-agent client — not here.
 
 ## 4. Authentication
 
-Two distinct hops, two distinct credentials:
+Two distinct hops, two distinct credentials, **both implemented**:
 
-| Hop | Credential |
-|---|---|
-| Client → MCP server | `X-API-Key`, issued manually per consumer (MVP) |
-| MCP server → REST API | its own `mcp` service key (already provisioned) |
+| Hop | Credential | Enforced by |
+|---|---|---|
+| Client → MCP server | `X-API-Key`, issued manually per consumer (MVP) | `mcp/security.py`'s `ApiKeyAuthMiddleware`, config'd via `DXB_MCP_CLIENT_API_KEYS` |
+| MCP server → REST API | its own `mcp` service key (already provisioned) | `mcp/client.py`'s `ApiClient`, config'd via `DXB_MCP_API_KEY` |
+
+Same key format both hops, deliberately: `{"name", "key_hash", "scopes"}`,
+SHA-256 hex, `hmac.compare_digest` verification — identical to the REST API's
+`DXB_API_KEYS`. `mcp/auth.py` reimplements the ~15 lines rather than importing
+`dxb_api.auth` (banned, §2: this service must stay a pure HTTP client of the
+REST API, never grow a dependency on its internals). Nothing here is
+proprietary — "hash + constant-time compare" is a generic technique — so
+duplicating the technique while sharing the *format* is what lets the one
+key-generation command in the root README produce valid entries for either
+`.env` variable.
+
+**The client-side check is an ASGI middleware, not a per-tool guard**, and
+deliberately a raw one rather than Starlette's `BaseHTTPMiddleware`: the
+latter buffers the whole response before your code can see it, which would
+silently defeat SSE streaming — the same failure shape as the nginx
+`proxy_buffering` trap in §8, one layer further in. The middleware inspects
+only request headers and, on success, hands off to the app completely
+untouched; an unauthenticated call never reaches session management or tool
+dispatch at all.
+
+**Fails closed.** With `DXB_MCP_CLIENT_API_KEYS` empty and
+`DXB_MCP_AUTH_DISABLED` not set, every request is rejected — logged as a
+warning at startup so the "everything 401s" state is diagnosable rather than
+mysterious, but rejected regardless. The alternative (defaulting open) is
+exactly the gap this section closes.
 
 MVP scope, per decision: no OAuth, no open registration. Keys are handed out
 manually while the platform is unproven. The MCP spec's OAuth 2.1 flow is the
@@ -145,7 +170,8 @@ upgrade path when third parties self-serve.
 
 *Accepted tradeoff*: the REST API sees all MCP traffic as a single principal,
 so per-consumer attribution lives in the MCP server's own logs, not the API's.
-Acceptable at MVP; revisit with OAuth.
+The authenticated consumer's `name` is logged on every request
+(`security.py`) for exactly this reason. Acceptable at MVP; revisit with OAuth.
 
 ## 5. Tool surface — 7 tools
 

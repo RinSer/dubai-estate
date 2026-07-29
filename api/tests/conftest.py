@@ -46,6 +46,7 @@ _ENV_VARS = [
     "DXB_DEFAULT_MIN_SAMPLE",
     "DXB_TRGM_THRESHOLD",
     "DXB_TRGM_AMBIGUITY_MARGIN",
+    "DXB_API_ROOT_PATH",
 ]
 
 
@@ -104,6 +105,26 @@ def client(open_settings):
     from dxb_api.main import create_app
 
     app = create_app(open_settings)
+    app.router.lifespan_context = _no_db_lifespan
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def proxied_client(monkeypatch, open_settings):
+    """The same app, but as nginx actually serves it: mounted at /api.
+
+    Exists because of a real bug: every endpoint tested green under `client`
+    (root-mounted), but the rendered docs page 404'd in a browser through
+    nginx, because FastAPI had no idea it was reachable under a prefix and
+    embedded an unprefixed `/openapi.json` link. Curling each URL directly
+    never caught it — only checking what the docs page itself *fetches* does.
+    """
+    monkeypatch.setenv("DXB_API_ROOT_PATH", "/api")
+    from dxb_api.config import build_settings
+    from dxb_api.main import create_app
+
+    app = create_app(build_settings())  # auth_disabled still set by open_settings
     app.router.lifespan_context = _no_db_lifespan
     with TestClient(app) as c:
         yield c

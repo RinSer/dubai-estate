@@ -36,6 +36,10 @@ services:
     env_file: .env
     environment:
       DXB_DB_HOST: db # later: the read replica host — one value changes
+      # nginx mounts this service at /api and strips the prefix before
+      # forwarding — see Settings.root_path (config.py) for why this needs to
+      # be told to FastAPI too, not just to nginx.
+      DXB_API_ROOT_PATH: /api
     # Deliberately no depends_on: elt — the API serves reads whether or not
     # the scheduler is running, and neither can block the other's startup.
     depends_on:

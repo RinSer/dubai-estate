@@ -177,6 +177,104 @@ def test_app_is_built_stateless():
     assert app is not None
 
 
+# --------------------------------------------------- client -> MCP auth
+#
+# Exercised through the real ASGI layer built by `build_app` — not by calling
+# `server.call_tool` directly — because that middleware wraps the ASGI app,
+# not the MCPServer object. A test that bypassed HTTP would prove nothing
+# about whether the check is actually reachable, the same gap that let the
+# lifespan bug (above) and the nginx proxy-header bug ship unnoticed.
+
+
+async def _mcp_request(transport, path, headers=None):
+    # base_url's host must be one _settings() actually allows (transport_security,
+    # tested above) — otherwise every call 421s there before auth is even
+    # reached, which would falsely look like an auth-layer failure.
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://localhost"
+    ) as http:
+        return await http.post(
+            path,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                **(headers or {}),
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            },
+        )
+
+
+async def test_missing_api_key_is_rejected_before_reaching_mcp():
+    app = build_app(
+        _settings(client_api_keys=[{"name": "x", "key_hash": "irrelevant"}])
+    )
+    async with _asgi_lifespan(app):
+        response = await _mcp_request(httpx.ASGITransport(app=app), "/mcp")
+    assert response.status_code == 401
+    assert response.json()["error"] == "unauthorized"
+
+
+async def test_wrong_api_key_is_rejected():
+    from dxb_mcp.auth import hash_api_key
+
+    app = build_app(
+        _settings(client_api_keys=[{"name": "x", "key_hash": hash_api_key("right")}])
+    )
+    async with _asgi_lifespan(app):
+        response = await _mcp_request(
+            httpx.ASGITransport(app=app), "/mcp", {"X-API-Key": "wrong"}
+        )
+    assert response.status_code == 401
+
+
+async def test_correct_api_key_reaches_mcp():
+    from dxb_mcp.auth import hash_api_key
+
+    app = build_app(
+        _settings(client_api_keys=[{"name": "x", "key_hash": hash_api_key("right")}])
+    )
+    async with _asgi_lifespan(app):
+        response = await _mcp_request(
+            httpx.ASGITransport(app=app), "/mcp", {"X-API-Key": "right"}
+        )
+    assert response.status_code == 200
+    assert "tools" in response.text
+
+
+async def test_auth_disabled_bypasses_the_check():
+    """The escape hatch, for local development — never for anything reachable
+    beyond localhost."""
+    app = build_app(_settings(auth_disabled=True, client_api_keys=[]))
+    async with _asgi_lifespan(app):
+        response = await _mcp_request(httpx.ASGITransport(app=app), "/mcp")
+    assert response.status_code == 200
+
+
+async def test_health_needs_no_key():
+    """Matches the REST API's own /health: the compose healthcheck, hit
+    constantly from inside the network, must never be auth-gated."""
+    app = build_app(_settings(client_api_keys=[{"name": "x", "key_hash": "x"}]))
+    async with _asgi_lifespan(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            response = await http.get("/health")
+    assert response.status_code == 200
+
+
+def test_empty_keys_without_auth_disabled_fails_closed():
+    """The safe default: no keys configured and auth not explicitly disabled
+    means every request is rejected, not accepted."""
+    settings = _settings(client_api_keys=[], auth_disabled=False)
+    assert settings.client_api_keys == []
+    assert settings.auth_disabled is False
+
+
 # ------------------------------------------------------------- contract
 
 

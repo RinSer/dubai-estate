@@ -165,6 +165,35 @@ def test_metrics_reference_is_cacheable(client):
     assert "max-age" in client.get("/meta/metrics").headers["cache-control"]
 
 
+def test_docs_page_embeds_the_proxied_openapi_url(proxied_client):
+    """Regression: through nginx (which mounts this app at /api and strips the
+    prefix before forwarding) the rendered docs page embedded an unprefixed
+    `/openapi.json` link. A browser following it hit nginx with no matching
+    location and got a 404 nginx itself returned — invisible to a test that
+    only curls each URL directly rather than reading what the page fetches.
+    """
+    html = proxied_client.get("/docs").text
+    assert "url: '/api/openapi.json'" in html
+    assert "url: '/openapi.json'" not in html
+
+
+def test_openapi_schema_advertises_the_proxied_server_url(proxied_client):
+    """The `servers` entry is what tools generating a client from this schema
+    would use as the base URL — it must point through the proxy too."""
+    schema = proxied_client.get("/openapi.json").json()
+    servers = [s["url"] for s in schema.get("servers", [])]
+    assert "/api" in servers
+
+
+def test_unprefixed_app_embeds_no_prefix(client):
+    """The counterpart to the two tests above: without DXB_API_ROOT_PATH set
+    (host-network dev, or the test suite itself) the docs page must NOT gain a
+    stray /api it was never given — root_path is proxy-driven, not hardcoded.
+    """
+    html = client.get("/docs").text
+    assert "url: '/openapi.json'" in html
+
+
 # ------------------------------------------------------------- dimensions
 
 

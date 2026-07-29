@@ -28,6 +28,7 @@ from starlette.responses import JSONResponse
 from dxb_mcp import projection
 from dxb_mcp.client import ApiClient
 from dxb_mcp.config import Settings, get_settings
+from dxb_mcp.security import ApiKeyAuthMiddleware
 
 log = logging.getLogger(__name__)
 
@@ -133,13 +134,17 @@ def transport_security(settings: Settings) -> TransportSecuritySettings:
 def build_app(settings: Settings, server: MCPServer | None = None):
     """The ASGI app, assembled the one way the deployment uses it."""
     server = server or create_server(settings)
-    return server.streamable_http_app(
+    app = server.streamable_http_app(
         streamable_http_path=settings.path,
         # No session affinity: nginx round-robins freely and replicas scale
         # horizontally (docs/MCP_DESIGN.md §3).
         stateless_http=True,
         transport_security=transport_security(settings),
     )
+    # Outermost layer: runs before the SDK's own routing, so an unauthenticated
+    # caller never reaches session management, tool dispatch, or the REST
+    # client at all (docs/MCP_DESIGN.md §4).
+    return ApiKeyAuthMiddleware(app, settings)
 
 
 def _register(mcp: MCPServer, api, settings: Settings) -> None:
