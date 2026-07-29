@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dxb_core.models import (
     DimArea,
+    DimBuilding,
     DimDeveloper,
     DimProject,
     DimPropertyType,
@@ -345,6 +346,24 @@ class DimensionRepository(BaseRepository):
 
     # ------------------------------------------------------------ shared
 
+    async def resolve_building(
+        self, q: str, *, area_id: int | None = None
+    ) -> tuple[int, dict]:
+        """Building names repeat across Dubai far more than area names do
+        ('MARINA TOWER' exists several times), so `area_id` matters more here
+        than elsewhere — without it the ambiguity error is the common case
+        rather than the exception."""
+        base = select(DimBuilding.id, DimBuilding.name_en)
+        if area_id is not None:
+            base = base.where(DimBuilding.area_id == area_id)
+        return await self._resolve(
+            query=q,
+            name_col=DimBuilding.name_en,
+            id_col=DimBuilding.id,
+            base_stmt=base,
+            entity="building",
+        )
+
     async def resolve(self, entity: str, q: str, **scope) -> tuple[int, dict]:
         if entity == "area":
             return await self.resolve_area(q)
@@ -352,4 +371,6 @@ class DimensionRepository(BaseRepository):
             return await self.resolve_project(q, **scope)
         if entity == "developer":
             return await self.resolve_developer(q)
+        if entity == "building":
+            return await self.resolve_building(q, **scope)
         raise ValidationError(f"Cannot resolve entity type {entity!r}", entity=entity)

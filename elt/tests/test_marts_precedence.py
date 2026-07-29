@@ -12,6 +12,8 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from dxb_core import constants
+
 from dxb import marts
 
 
@@ -160,7 +162,44 @@ def test_rebuild_marts_passes_cagr_and_tier_constants_as_params():
 
     insert_calls = [c for c in session.execute.call_args_list if len(c[0]) > 1]
     building_params = insert_calls[-1][0][1]
-    assert building_params["cagr_min_years"] == marts._CAGR_MIN_YEARS
-    assert building_params["cagr_anchor_n"] == marts._CAGR_ANCHOR_MIN_N
-    assert building_params["tier_strong"] == marts._TIER_STRONG_N
-    assert building_params["tier_thin"] == marts._TIER_THIN_N
+    assert building_params["cagr_min_years"] == constants.CAGR_MIN_YEARS
+    assert building_params["cagr_anchor_n"] == constants.CAGR_ANCHOR_MIN_N
+    assert building_params["tier_strong"] == constants.TIER_STRONG_N
+    assert building_params["tier_thin"] == constants.TIER_THIN_N
+
+
+# ------------------------------------------------- bounds have one definition
+
+
+def test_mart_sql_carries_no_hardcoded_bounds():
+    """The sanity bounds must ride as bind parameters, not literals. Three
+    layers state these numbers (mart SQL, /meta/coverage, /meta/metrics) and a
+    literal here is how they drift apart silently."""
+    for sql in (
+        marts._AREA_MART_SQL,
+        marts._PROJECT_MART_SQL,
+        marts._BUILDING_MART_SQL,
+    ):
+        assert "'Sales'" not in sql
+        assert "200000" not in sql and "20000" not in sql
+        assert ":price_min" in sql and ":price_max" in sql
+
+
+def test_rebuild_marts_binds_bounds_from_shared_constants():
+    session = _session_with_cutover({})
+    session.execute.return_value.rowcount = 0
+
+    marts.rebuild_marts(session)
+
+    for call in [c for c in session.execute.call_args_list if len(c[0]) > 1]:
+        params = call[0][1]
+        assert params["txn_group"] == constants.SALE_TXN_GROUP
+        assert params["price_min"] == constants.PRICE_M2_MIN
+        assert params["price_max"] == constants.PRICE_M2_MAX
+        assert params["sale_min_date"] == constants.SALE_MIN_DATE
+
+
+def test_rent_horizon_is_interpolated_from_the_shared_constant():
+    """Interval literals cannot be bound, so this one is interpolated — assert
+    it still tracks the constant rather than a hand-typed '2 years'."""
+    assert f"'{constants.RENT_MAX_HORIZON_YEARS} years'" in marts._RENT_HORIZON_SQL

@@ -10,7 +10,14 @@ from __future__ import annotations
 
 from datetime import date
 
-from dxb_core.models import DimArea, DimProject, MartAreaMonthly, MartProjectMonthly
+from dxb_core.models import (
+    DimArea,
+    DimBuilding,
+    DimProject,
+    MartAreaMonthly,
+    MartBuildingSummary,
+    MartProjectMonthly,
+)
 from sqlalchemy import Select, select
 
 from dxb_api.repositories.base import BaseRepository
@@ -157,6 +164,86 @@ class MartRepository(BaseRepository):
             stmt=stmt,
             id_col=m.project_id,
         )
+
+    async def building_summary(
+        self,
+        *,
+        building_ids: list[int] | None = None,
+        area_id: int | None = None,
+        usage: str | None = None,
+        min_sample: int | None = None,
+        sample_tier: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> dict:
+        """One row per (building, usage) — deliberately not a monthly series.
+
+        The shape differs from the other two marts on purpose, and callers
+        should not try to plot it as a time series. A monthly grain was
+        measured and rejected: 42% of (building, month, usage) cells would hold
+        exactly one sale (BUILDING_MART_ANALYSIS.md §3). What is published
+        instead is a trailing-12-month price level, lifetime coverage, and a
+        CAGR that is null unless the sample genuinely supports it.
+
+        Sales only, permanently — there are no rent or yield columns here
+        because no rent contract carries a building identifier.
+        """
+        building_ids = self._check_id_set(building_ids, "building_ids")
+        limit, offset = self._bounded(limit, offset)
+        m = MartBuildingSummary
+
+        stmt = select(
+            m.building_id.label("entity_id"),
+            DimBuilding.name_en.label("name_en"),
+            DimBuilding.area_id,
+            DimArea.name_en.label("area_name_en"),
+            m.usage,
+            m.sale_cnt_12m,
+            m.median_price_m2_12m,
+            m.p25_price_m2_12m,
+            m.p75_price_m2_12m,
+            m.sale_cnt_total,
+            m.median_price_m2_all,
+            m.first_sale,
+            m.last_sale,
+            m.price_m2_cagr_pct,
+            m.cagr_years,
+            m.cagr_sample_size,
+            m.sample_tier,
+        ).join(DimBuilding, DimBuilding.id == m.building_id)
+        stmt = stmt.outerjoin(DimArea, DimArea.id == DimBuilding.area_id)
+
+        if building_ids:
+            stmt = stmt.where(m.building_id.in_(building_ids))
+        if area_id is not None:
+            stmt = stmt.where(DimBuilding.area_id == area_id)
+        if usage:
+            stmt = stmt.where(m.usage == usage)
+        if min_sample:
+            stmt = stmt.where(m.sale_cnt_12m >= min_sample)
+        if sample_tier:
+            stmt = stmt.where(m.sample_tier == sample_tier)
+
+        stmt = stmt.order_by(m.sale_cnt_total.desc(), DimBuilding.name_en.asc())
+
+        rows, has_more = await self._page(stmt, limit, offset)
+        envelope = await self._envelope(
+            rows,
+            building_ids,
+            limit,
+            offset,
+            has_more,
+            min_sample,
+            include_future=False,
+            stmt=stmt,
+            id_col=m.building_id,
+        )
+        envelope["grain"] = "one row per (building, usage) — not a time series"
+        envelope["sales_only"] = (
+            "No rent, yield or total-return figures exist at building grain: "
+            "the source rent data carries no building identifier."
+        )
+        return envelope
 
     # ----------------------------------------------------------- helpers
 

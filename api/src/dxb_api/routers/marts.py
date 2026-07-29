@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Query
 
 from dxb_api.deps import DimensionRepoDep, MartRepoDep, PrincipalDep, csv_ints
-from dxb_api.schemas.marts import MartPage
+from dxb_api.schemas.marts import BuildingSummaryPage, MartPage
 
 router = APIRouter(prefix="/marts", tags=["marts"])
 
@@ -121,6 +121,69 @@ async def project_monthly(
         has_geo_data=has_geo_data,
         geo_level=geo_level,
         include_future=include_future,
+        limit=limit,
+        offset=offset,
+    )
+    if resolved:
+        result["resolved_entity"] = resolved
+    return result
+
+
+@router.get(
+    "/building-summary",
+    response_model=BuildingSummaryPage,
+    summary="Price summary per building — not a time series",
+    description=(
+        "One row per (building, usage): a trailing-12-month price level, "
+        "lifetime coverage, and a coarse CAGR that is null unless the sample "
+        "supports it.\n\n"
+        "The shape differs from the monthly marts deliberately. A monthly "
+        "grain was measured and rejected — 42% of (building, month, usage) "
+        "cells would hold exactly one sale, so a 'median' there is just that "
+        "sale. Do not plot this as a series.\n\n"
+        "Sales only, permanently: no rent contract carries a building "
+        "identifier, so yield cannot be computed at this grain."
+    ),
+)
+async def building_summary(
+    repo: MartRepoDep,
+    dims: DimensionRepoDep,
+    _: PrincipalDep,
+    building_ids: Annotated[str | None, _IDS] = None,
+    q: Annotated[
+        str | None,
+        Query(description="Resolve one building by fuzzy name instead of passing ids."),
+    ] = None,
+    area_id: Annotated[
+        int | None,
+        Query(
+            description=(
+                "Filters results, and scopes `q=` resolution. Building names "
+                "repeat across Dubai more than area names do, so without this "
+                "an ambiguous `q=` is the common case."
+            )
+        ),
+    ] = None,
+    usage: str | None = None,
+    min_sample: Annotated[int | None, _MIN_SAMPLE] = None,
+    sample_tier: Annotated[
+        Literal["strong", "thin", "insufficient"] | None,
+        Query(description="Filter by price-level reliability."),
+    ] = None,
+    limit: int | None = None,
+    offset: int | None = None,
+):
+    ids = csv_ints(building_ids)
+    resolved = None
+    if q and not ids:
+        building_id, resolved = await dims.resolve_building(q, area_id=area_id)
+        ids = [building_id]
+    result = await repo.building_summary(
+        building_ids=ids,
+        area_id=area_id,
+        usage=usage,
+        min_sample=min_sample,
+        sample_tier=sample_tier,
         limit=limit,
         offset=offset,
     )

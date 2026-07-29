@@ -75,6 +75,29 @@ class RankedEntity(MetricSummary):
     id: int
     name_en: str
 
+    # `None` on an area or project simply means "not applicable to this grain".
+    usage: str | None = None
+    sample_size: int | None = Field(
+        None, description="Buildings: sales in the trailing 12 months."
+    )
+    sample_size_lifetime: int | None = None
+    median_sale_aed_m2_lifetime: float | None = None
+    cagr_sample_size: int | None = None
+    sample_tier: str | None = Field(
+        None,
+        description=(
+            "Buildings only: strong / thin / insufficient. Quote 'thin' and "
+            "'insufficient' figures with that caveat attached."
+        ),
+    )
+    income_metrics_unavailable: str | None = Field(
+        None,
+        description=(
+            "Present on buildings: states that yield cannot exist at this "
+            "grain, so a null is not read as missing data."
+        ),
+    )
+
 
 class RankingResponse(MethodologyBlock):
     entity: str

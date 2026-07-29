@@ -152,6 +152,19 @@ def test_health_touches_no_repository(client):
     assert client.app.state.sessionmaker is None
 
 
+def test_metrics_reference_is_served_without_a_repository(client):
+    """Wired, and static: derived from constants, so it must answer with no
+    repository override and no database at all."""
+    body = client.get("/meta/metrics").json()
+    assert {"metrics", "marts", "units", "caveats"} <= set(body)
+    assert client.app.state.sessionmaker is None
+
+
+def test_metrics_reference_is_cacheable(client):
+    """An agent may read this every session and it changes only on deploy."""
+    assert "max-age" in client.get("/meta/metrics").headers["cache-control"]
+
+
 # ------------------------------------------------------------- dimensions
 
 
@@ -315,8 +328,11 @@ def test_project_schema_exposes_building_confidence_fields(client):
 
 def test_building_endpoints_are_registered_and_documented(client):
     schema = client.app.openapi()
-    for path in ("/dimensions/buildings", "/dimensions/buildings/{building_id}",
-                 "/geo/buildings"):
+    for path in (
+        "/dimensions/buildings",
+        "/dimensions/buildings/{building_id}",
+        "/geo/buildings",
+    ):
         assert path in schema["paths"]
         assert schema["paths"][path]["get"].get("summary")
 

@@ -47,6 +47,7 @@ class FactRepository(BaseRepository):
         *,
         area_id: int | None = None,
         project_id: int | None = None,
+        building_id: int | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
         txn_group: str | None = None,
@@ -61,7 +62,12 @@ class FactRepository(BaseRepository):
         limit: int | None = None,
         offset: int | None = None,
     ) -> dict:
-        _require_selective(area_id=area_id, project_id=project_id, date_from=date_from)
+        _require_selective(
+            area_id=area_id,
+            project_id=project_id,
+            building_id=building_id,
+            date_from=date_from,
+        )
         limit, offset = self._bounded(limit, offset)
 
         f = FactSaleTransaction
@@ -103,6 +109,12 @@ class FactRepository(BaseRepository):
             stmt = stmt.where(f.area_id == area_id)
         if project_id is not None:
             stmt = stmt.where(f.project_id == project_id)
+        if building_id is not None:
+            # Populated on ~71.5% of sales — a building filter therefore
+            # returns a subset of that building's true activity, never a
+            # superset. Safe to filter on; not safe to read a zero result as
+            # "nothing ever sold here".
+            stmt = stmt.where(f.building_id == building_id)
         if date_from is not None:
             stmt = stmt.where(f.txn_date >= date_from)
         if date_to is not None:

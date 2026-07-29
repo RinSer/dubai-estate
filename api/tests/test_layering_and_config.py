@@ -17,16 +17,37 @@ from dxb_api.config import build_settings
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "dxb_api"
 BANNED = ("sqlalchemy", "dxb_core", "geoalchemy2")
 
+# `dxb_core.constants` is exempt, and the exemption is narrow on purpose. The
+# rule exists so that code outside repositories/ *cannot query* — it is
+# enforced by denying access to the things you would query with: SQLAlchemy,
+# the geo column types, and the table metadata. `constants` holds none of
+# those. It is plain numbers and strings with no imports of its own, so
+# importing it grants no new capability.
+#
+# It has to be reachable from domain/: the mart bounds define what the metrics
+# mean, and /meta/metrics states them. The alternative is a second hand-typed
+# copy in the API, which is the drift the module was created to remove.
+#
+# Bare `import dxb_core` stays banned — the package __init__ re-exports Base,
+# so it is a route to the schema.
+ALLOWED_SHARED = ("dxb_core.constants",)
+
 
 def _imports(path: pathlib.Path) -> set[str]:
+    """Full dotted module paths, so `dxb_core.models` and `dxb_core.constants`
+    are distinguishable — the whole point of the exemption above."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            found.update(a.name.split(".")[0] for a in node.names)
+            found.update(a.name for a in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            found.add(node.module.split(".")[0])
+            found.add(node.module)
     return found
+
+
+def _roots(modules: set[str]) -> set[str]:
+    return {m.split(".")[0] for m in modules}
 
 
 def test_only_repositories_touch_sqlalchemy_or_the_shared_schema():
@@ -35,10 +56,24 @@ def test_only_repositories_touch_sqlalchemy_or_the_shared_schema():
     for path in SRC.rglob("*.py"):
         if "repositories" in path.parts:
             continue
-        leaked = _imports(path) & set(BANNED)
+        leaked = {
+            module
+            for module in _imports(path)
+            if module.split(".")[0] in BANNED and module not in ALLOWED_SHARED
+        }
         if leaked:
             offenders.append(f"{path.relative_to(SRC)} imports {sorted(leaked)}")
     assert offenders == []
+
+
+def test_the_shared_constants_exemption_cannot_smuggle_in_the_schema():
+    """Guards the exemption itself: if `constants` ever grew an import of the
+    models (or of SQLAlchemy), every module allowed to import it would gain a
+    silent path to the database and this file would still pass."""
+    import dxb_core.constants as shared
+
+    leaked = _roots(_imports(pathlib.Path(shared.__file__))) & set(BANNED)
+    assert leaked == set(), f"dxb_core.constants must stay inert, imports {leaked}"
 
 
 def test_api_never_imports_the_elt_package():

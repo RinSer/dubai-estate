@@ -8,6 +8,7 @@ pickers and to warn about partial geometry.
 
 from __future__ import annotations
 
+from dxb_core.constants import RENT_MAX_HORIZON_YEARS, SALE_MIN_DATE
 from dxb_core.models import (
     DimArea,
     DimProject,
@@ -23,15 +24,17 @@ from sqlalchemy import case, func, select, text
 
 from dxb_api.repositories.base import BaseRepository
 
-# The same sanity bounds the mart rebuild applies (elt/src/dxb/marts.py). The
-# raw extremes are not usable as a coverage statement: the source data holds a
-# handful of impossible dates — a sale stamped 1416 (a Hijri year that leaked
-# through as Gregorian) and leases starting in 2205. Reporting those as the
-# range would tell a client we have three centuries of data, which is exactly
-# the confident-wrong-answer this endpoint exists to prevent. So the usable
-# range is reported and the excluded rows are counted, not hidden.
-SALE_MIN_DATE = "1990-01-01"
-RENT_MAX_HORIZON_YEARS = 2
+# The same sanity bounds the mart rebuild applies — now imported from
+# dxb_core.constants rather than re-declared here, which is what they were
+# before and how they would eventually have drifted apart from the ELT's copy.
+#
+# Why they exist at all: the raw extremes are not usable as a coverage
+# statement, because the source data holds a handful of impossible dates — a
+# sale stamped 1416 (a Hijri year that leaked through as Gregorian) and leases
+# starting in 2205. Reporting those as the range would tell a client we have
+# six centuries of data, which is exactly the confident-wrong-answer this
+# endpoint exists to prevent. So the usable range is reported and the excluded
+# rows are counted, not hidden.
 
 
 class MetaRepository(BaseRepository):

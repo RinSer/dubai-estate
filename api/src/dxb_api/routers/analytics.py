@@ -19,6 +19,10 @@ from dxb_api.schemas.analytics import CompareResponse, GrowthResponse, RankingRe
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 Entity = Literal["area", "project"]
+# Ranking additionally supports buildings, but only on the two metrics that can
+# exist at that grain — the repository refuses the others with an explanation
+# rather than returning nulls (BUILDING_MART_ANALYSIS.md §2).
+RankEntity = Literal["area", "project", "building"]
 Metric = Literal[
     "capital_growth", "gross_yield", "total_return", "sale_price_m2", "rent_m2"
 ]
@@ -28,18 +32,20 @@ GeoLevel = Literal["point", "polygon"]
 @router.get(
     "/area-ranking",
     response_model=RankingResponse,
-    summary="Rank areas by an investment metric",
+    summary="Rank areas, projects or buildings by an investment metric",
     description=(
         "Answers 'which area has the best ROI over the last N years' and — "
         "with ascending=true and metric=sale_price_m2 — 'where is the "
-        "cheapest part of Dubai'."
+        "cheapest part of Dubai'. Buildings support only capital_growth and "
+        "sale_price_m2: no rent contract carries a building identifier, so "
+        "income metrics cannot exist at that grain."
     ),
 )
 async def area_ranking(
     repo: AnalyticsRepoDep,
     _: PrincipalDep,
     metric: Metric = "total_return",
-    entity: Entity = "area",
+    entity: RankEntity = "area",
     month_from: date | None = None,
     month_to: date | None = None,
     usage: str | None = None,
@@ -143,19 +149,30 @@ async def yields(
 @router.get(
     "/compare",
     response_model=CompareResponse,
-    summary="Side-by-side metrics across usages, areas or projects",
+    summary="Side-by-side metrics across usages, entities, or mixed types",
     description=(
         "Answers 'is it better to invest in X or Y'. For usage comparisons, "
         "call /dimensions/usages first — the vocabulary is raw and there is "
-        "no 'office' category to compare against."
+        "no 'office' category to compare against.\n\n"
+        "Use `dimension=mixed` to compare across types: values become "
+        "`type:value` specs such as `project:412,area:Dubai Marina`. That is "
+        "how you ask whether a development is beating the neighbourhood it "
+        "sits in, which single-type comparison cannot express."
     ),
 )
 async def compare(
     repo: AnalyticsRepoDep,
     _: PrincipalDep,
-    dimension: Literal["usage", "area", "project"] = "usage",
+    dimension: Literal["usage", "area", "project", "mixed"] = "usage",
     values: Annotated[
-        str, Query(description="Comma-separated values, names or ids.")
+        str,
+        Query(
+            description=(
+                "Comma-separated values, names or ids. With dimension=mixed, "
+                "each value is 'type:value', e.g. 'area:55' or "
+                "'building:LAKE TERRACE'."
+            )
+        ),
     ] = "",
     month_from: date | None = None,
     month_to: date | None = None,

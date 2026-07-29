@@ -25,11 +25,40 @@ from __future__ import annotations
 
 import logging
 
+from dxb_core.constants import (
+    CAGR_ANCHOR_MIN_N,
+    CAGR_MIN_YEARS,
+    PRICE_M2_MAX,
+    PRICE_M2_MIN,
+    RENT_M2_YEAR_MAX,
+    RENT_M2_YEAR_MIN,
+    RENT_MAX_HORIZON_YEARS,
+    SALE_MIN_DATE,
+    SALE_TXN_GROUP,
+    TIER_STRONG_N,
+    TIER_THIN_N,
+)
 from dxb_core.models import EtlSourceCutover
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 log = logging.getLogger(__name__)
+
+# The bounds ride as bind parameters rather than literals so there is exactly
+# one definition of each (dxb_core.constants) and the API can state the same
+# numbers in its methodology without re-typing them.
+_BOUND_PARAMS = {
+    "txn_group": SALE_TXN_GROUP,
+    "price_min": PRICE_M2_MIN,
+    "price_max": PRICE_M2_MAX,
+    "sale_min_date": SALE_MIN_DATE,
+    "rent_min": RENT_M2_YEAR_MIN,
+    "rent_max": RENT_M2_YEAR_MAX,
+}
+
+# Interval literals cannot be bound; this one is interpolated at import time
+# from the same constant, so it still has a single definition.
+_RENT_HORIZON_SQL = f"CURRENT_DATE + INTERVAL '{RENT_MAX_HORIZON_YEARS} years'"
 
 
 def _precedence(
@@ -85,8 +114,9 @@ FROM (
                   WITHIN GROUP (ORDER BY f.price_per_m2))::numeric, 2) AS p75
     FROM fact_sale_transaction f
     LEFT JOIN dim_property_type pt ON pt.id = f.property_type_id
-    WHERE f.txn_group = 'Sales' AND f.price_per_m2 BETWEEN 500 AND 200000
-      AND f.txn_date >= DATE '1990-01-01'{sale_prec}
+    WHERE f.txn_group = :txn_group
+      AND f.price_per_m2 BETWEEN :price_min AND :price_max
+      AND f.txn_date >= CAST(:sale_min_date AS date){sale_prec}
     GROUP BY 1, 2, 3
 ) s
 FULL OUTER JOIN (
@@ -98,9 +128,9 @@ FULL OUTER JOIN (
                   WITHIN GROUP (ORDER BY f.rent_per_m2_year))::numeric, 2) AS med
     FROM fact_rent_contract f
     LEFT JOIN dim_property_type pt ON pt.id = f.property_type_id
-    WHERE f.rent_per_m2_year BETWEEN 50 AND 20000
+    WHERE f.rent_per_m2_year BETWEEN :rent_min AND :rent_max
       AND f.start_date IS NOT NULL
-      AND f.start_date <= CURRENT_DATE + INTERVAL '2 years'{rent_prec}
+      AND f.start_date <= {rent_horizon}{rent_prec}
     GROUP BY 1, 2, 3
 ) r USING (area_id, month, usage)
 """
@@ -133,8 +163,9 @@ FROM (
     FROM fact_sale_transaction f
     LEFT JOIN dim_property_type pt ON pt.id = f.property_type_id
     WHERE f.project_id IS NOT NULL
-      AND f.txn_group = 'Sales' AND f.price_per_m2 BETWEEN 500 AND 200000
-      AND f.txn_date >= DATE '1990-01-01'{sale_prec}
+      AND f.txn_group = :txn_group
+      AND f.price_per_m2 BETWEEN :price_min AND :price_max
+      AND f.txn_date >= CAST(:sale_min_date AS date){sale_prec}
     GROUP BY 1, 2, 3
 ) s
 FULL OUTER JOIN (
@@ -146,9 +177,10 @@ FULL OUTER JOIN (
                   WITHIN GROUP (ORDER BY f.rent_per_m2_year))::numeric, 2) AS med
     FROM fact_rent_contract f
     LEFT JOIN dim_property_type pt ON pt.id = f.property_type_id
-    WHERE f.project_id IS NOT NULL AND f.rent_per_m2_year BETWEEN 50 AND 20000
+    WHERE f.project_id IS NOT NULL
+      AND f.rent_per_m2_year BETWEEN :rent_min AND :rent_max
       AND f.start_date IS NOT NULL
-      AND f.start_date <= CURRENT_DATE + INTERVAL '2 years'{rent_prec}
+      AND f.start_date <= {rent_horizon}{rent_prec}
     GROUP BY 1, 2, 3
 ) r USING (project_id, month, usage)
 """
@@ -156,14 +188,14 @@ FULL OUTER JOIN (
 
 # --------------------------------------------------------- building summary
 
-# Guards on the coarse CAGR. A building-level trend is only honest when the
-# span is long enough for annualization to mean anything AND both ends carry
-# more than a couple of sales — see docs/BUILDING_MART_ANALYSIS.md §3.
-_CAGR_MIN_YEARS = 2.0
-_CAGR_ANCHOR_MIN_N = 5
-# Reliability of the trailing-12-month price level, reported as sample_tier.
-_TIER_STRONG_N = 20
-_TIER_THIN_N = 5
+# Guard values live in dxb_core.constants so the API can state the same numbers
+# in its methodology (/meta/metrics) without re-typing them.
+_GUARD_PARAMS = {
+    "cagr_min_years": CAGR_MIN_YEARS,
+    "cagr_anchor_n": CAGR_ANCHOR_MIN_N,
+    "tier_strong": TIER_STRONG_N,
+    "tier_thin": TIER_THIN_N,
+}
 
 # One row per (building, usage). NOT monthly on purpose: at building level a
 # monthly grain is 42% single-sale cells (analysis doc §3). Anchors mirror the
@@ -184,9 +216,9 @@ WITH base AS (
     FROM fact_sale_transaction f
     LEFT JOIN dim_property_type pt ON pt.id = f.property_type_id
     WHERE f.building_id IS NOT NULL
-      AND f.txn_group = 'Sales'
-      AND f.price_per_m2 BETWEEN 500 AND 200000
-      AND f.txn_date >= DATE '1990-01-01'
+      AND f.txn_group = :txn_group
+      AND f.price_per_m2 BETWEEN :price_min AND :price_max
+      AND f.txn_date >= CAST(:sale_min_date AS date)
       AND f.txn_date <= CURRENT_DATE{sale_prec}
 ),
 bounds AS (
@@ -214,6 +246,8 @@ recent AS (
 early AS (
     SELECT b.bid, b.usage, count(*)::int AS cnt,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY b.ppm) AS med,
+           -- 1990-01-01 here is an arbitrary epoch for averaging dates as day
+           -- offsets, not a data bound (that one is :sale_min_date, above).
            (DATE '1990-01-01' + avg(b.d - DATE '1990-01-01')::int) AS mid
     FROM base b
     JOIN bounds bo ON bo.bid = b.bid AND bo.usage = b.usage
@@ -223,6 +257,8 @@ early AS (
 late AS (
     SELECT b.bid, b.usage, count(*)::int AS cnt,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY b.ppm) AS med,
+           -- 1990-01-01 here is an arbitrary epoch for averaging dates as day
+           -- offsets, not a data bound (that one is :sale_min_date, above).
            (DATE '1990-01-01' + avg(b.d - DATE '1990-01-01')::int) AS mid
     FROM base b
     JOIN bounds bo ON bo.bid = b.bid AND bo.usage = b.usage
@@ -265,15 +301,26 @@ def rebuild_marts(session: Session) -> dict:
     rent_prec, rent_params = _precedence(
         session, "rents", "f", "registration_date", "rent"
     )
-    params = {**sale_params, **rent_params}
+    params = {**_BOUND_PARAMS, **sale_params, **rent_params}
+    monthly_sql = {"rent_horizon": _RENT_HORIZON_SQL}
 
     session.execute(text("TRUNCATE mart_area_monthly"))
     area_rows = session.execute(
-        text(_AREA_MART_SQL.format(sale_prec=sale_prec, rent_prec=rent_prec)), params
+        text(
+            _AREA_MART_SQL.format(
+                sale_prec=sale_prec, rent_prec=rent_prec, **monthly_sql
+            )
+        ),
+        params,
     ).rowcount
     session.execute(text("TRUNCATE mart_project_monthly"))
     project_rows = session.execute(
-        text(_PROJECT_MART_SQL.format(sale_prec=sale_prec, rent_prec=rent_prec)), params
+        text(
+            _PROJECT_MART_SQL.format(
+                sale_prec=sale_prec, rent_prec=rent_prec, **monthly_sql
+            )
+        ),
+        params,
     ).rowcount
 
     # Buildings: summary grain, sales only. The rent precedence params are not
@@ -282,13 +329,7 @@ def rebuild_marts(session: Session) -> dict:
     session.execute(text("TRUNCATE mart_building_summary"))
     building_rows = session.execute(
         text(_BUILDING_MART_SQL.format(sale_prec=sale_prec)),
-        {
-            **sale_params,
-            "cagr_min_years": _CAGR_MIN_YEARS,
-            "cagr_anchor_n": _CAGR_ANCHOR_MIN_N,
-            "tier_strong": _TIER_STRONG_N,
-            "tier_thin": _TIER_THIN_N,
-        },
+        {**_BOUND_PARAMS, **sale_params, **_GUARD_PARAMS},
     ).rowcount
 
     session.commit()

@@ -7,3 +7,8 @@ __pycache__/
 # elt/src/dxb/db/, silently keeping the entire schema out of git.
 /db/
 /data/
+
+# TLS material for the nginx edge. The dev certificate is self-signed and
+# regenerable (see nginx/README.md); a private key must never be committed,
+# and a real one least of all.
+nginx/certs/

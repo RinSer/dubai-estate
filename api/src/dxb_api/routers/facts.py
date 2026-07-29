@@ -29,6 +29,16 @@ async def list_transactions(
     _: PrincipalDep,
     area_id: int | None = None,
     project_id: int | None = None,
+    building_id: Annotated[
+        int | None,
+        Query(
+            description=(
+                "Sales in one building. Linked on ~71.5% of transactions, so "
+                "this returns a subset of a building's real activity — an "
+                "empty result does not mean nothing sold there."
+            )
+        ),
+    ] = None,
     date_from: date | None = None,
     date_to: date | None = None,
     txn_group: Annotated[
@@ -49,6 +59,7 @@ async def list_transactions(
     return await repo.list_transactions(
         area_id=area_id,
         project_id=project_id,
+        building_id=building_id,
         date_from=date_from,
         date_to=date_to,
         txn_group=txn_group,
