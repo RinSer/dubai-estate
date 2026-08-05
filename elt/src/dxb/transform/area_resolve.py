@@ -9,10 +9,12 @@ exact rule instead of each re-implementing it and drifting apart.
 
 `project_area_actual` is READ-TIME INDIRECTION, never a mutation target:
 nothing is ever written to `dim_project` or `dim_building` by this mechanism
-— same "never touch existing data" rule as facts/marts. "Applying" a reviewed
-pair is nothing more than flipping `area_code_evidence.reviewed = true`
-(`area_codes.approve_area_split`); every reader picks up the new mapping on
-its next read, with no separate backfill/cascade step.
+— same "never touch existing data" rule as facts/marts. "Applying" (or
+undoing) a reviewed pair is nothing more than flipping
+`area_code_evidence.reviewed` true/false (`area_codes.approve_area_split` /
+`revert_area_split`, the interactive `dxb list-area-splits`); every reader
+picks up the change on its next read, either direction, with no separate
+backfill/cascade step.
 
 Resolution order:
 

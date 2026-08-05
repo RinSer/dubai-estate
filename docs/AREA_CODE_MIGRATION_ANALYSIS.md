@@ -1,9 +1,12 @@
 # Area code migration — plan
 
-Status: **revision 2, corrected after running the detector against live
-data.** Revision 1 (scalar `dim_area.superseded_by_area_id`, one old area →
-one new area) was implemented, tested, and then found insufficient by
-actually running it — see below. Not yet re-implemented.
+Status: **revision 2, implemented, tested, and live-verified end to end.**
+Revision 1 (scalar `dim_area.superseded_by_area_id`, one old area → one new
+area) was implemented, tested, and then found insufficient by actually
+running it — see below; it was replaced, not extended. As of the live
+verification pass, all 84 pairs the detector has found (48 distinct old
+areas, 21 genuinely one-to-many) are reviewed — see "Live verification
+results" at the end of this doc.
 
 ## What happened
 
@@ -222,14 +225,18 @@ hits this path; only the 21 one-to-many old areas can.
 ## API / MCP surface
 
 - `GET /dimensions/areas/{id}` on a **current** area: adds
-  `superseded_areas: [{id, dld_area_code, name_en, migrated_on}]`.
-- `GET /dimensions/areas/{id}` on an **old** area: adds
-  `superseded_by: {id, dld_area_code, name_en}` and a note that aggregated
-  figures are reported under the successor.
+  `superseded_areas: [{id, dld_area_code, name_en}]` — every old code whose
+  activity now reports under this area. Empty for an area never split.
+- `GET /dimensions/areas/{id}` on an **old** area: adds `superseded_by:
+  [{id, dld_area_code, name_en}]` — a **list**, not a single object, because
+  DLD subdivides, not renames (21 of 48 split areas have more than one
+  successor). The old area's own id/name/code are returned unchanged; only
+  its aggregated figures are unreachable when the list has 2+ entries (see
+  ambiguity error below).
 - `find_entity(detailed=true)` mirrors both fields.
-- Analytics/mart responses for a canonical area get one caveat line noting
-  the merge and linking the old code(s), so a client sees *why* a number
-  looks different from what raw-facts-by-old-code would show.
+- `growth`/`compare` on a canonical area get one caveat line naming the old
+  code(s) folded in, so a client sees *why* a number differs from what
+  raw-facts-by-old-code used to show.
 
 ## Detection (daily, mostly unchanged — now also captures the project set)
 
@@ -309,8 +316,8 @@ Every touch point, by file:
 | ELT write | `marts.py` | `_AREA_MART_SQL` GROUP BY → canonical (already planned) |
 | API read | `repositories/facts.py` | transactions/rents `area_id` filter → expand |
 | API read | `repositories/marts.py` | `area_monthly` (`area_ids`), `building_summary` (`area_id`) → expand |
-| API read | `repositories/dimensions.py` | `get_area` → lineage/ambiguity. `list_projects`, `resolve_project`, `resolve_building` → **no change**, plain `area_id` match (§ "no expansion" above) |
-| API read | `repositories/buildings.py` | `list_buildings(area_id)` → **no change**, plain `area_id` match |
+| API read | `repositories/dimensions.py` | `get_area` → lineage/ambiguity. `list_projects`, `resolve_project` → `area_id` match `OR`'d with `project_area_actual` indirection when the requested id is new/canonical (§ "OR'd with indirection" above); querying an old id stays a plain, unchanged literal match |
+| API read | `repositories/buildings.py` | `list_buildings`, `resolve_building` → same `OR`'d-indirection shape, through the building's own `project_id` |
 | API read | `repositories/geo.py` | area GeoJSON, project/building points → expand |
 | API read | `repositories/analytics.py` | ranking/growth/compare on `entity=area` → expand |
 | MCP | — | none; thin passthrough |
@@ -342,10 +349,66 @@ Reworked/added for revision 2:
 5. Marts + `expand_area_ids` + analytics self-joins: rework to the
    project-first mechanism (§ above), area-fallback only when an old area's
    successor is unambiguous. `list_projects`/`resolve_project`/
-   `list_buildings`/`resolve_building` are explicitly **unchanged** — see
-   "no expansion, no ambiguity error" above.
+   `list_buildings`/`resolve_building` never raise the ambiguity error and
+   never call `expand_area_ids` — but do get the `OR`'d `project_area_actual`
+   indirection when queried by a new/canonical area id (§ "OR'd with
+   indirection, never ambiguous" above); querying an old id stays unchanged.
 6. API/MCP lineage fields: list-shaped (`superseded_areas`/`superseded_by`
    are lists on both sides now, not a single object).
-7. Re-run the detector live, review, verify end to end — including the
-   ~9.8% project-less fallback path, and confirming `dim_project`/
-   `dim_building` rows are byte-for-byte unchanged before and after.
+7. **Done.** Re-ran the detector live, reviewed, verified end to end — see
+   "Live verification results" below.
+
+## Live verification results
+
+Rebuilt all three images (shared `dxb-core` model changes), applied the
+migration, ran the detector live: **84 pairs across 48 distinct old areas,
+21 of them genuinely one-to-many** — matching the design's predicted 44%
+exactly. All 84 reviewed via the interactive CLI (see below); marts rebuilt
+on the full approval set.
+
+Checked, all confirmed correct against live data:
+
+- **Reconciliation is exact, not approximate.** Summed over every
+  `mart_area_monthly` row: raw total `sale_cnt` = canonical-grouped total +
+  the excluded-ambiguous-old-area residual, to the row
+  (`1,341,862 = 988,044 + 353,818`). No loss, no double-count, at full scale.
+- **Project-anchored recovery stays disjoint at scale.** MARSA DUBAI's four
+  successors recovered 44 / 1 / 8 / 1 projects respectively (Marina /
+  Bluewaters / Harbour / JBR) — exact match, project-for-project, to the
+  detector's own original evidence counts.
+- **Ambiguity holds consistently.** Every one-to-many old area (spot-checked
+  MARSA DUBAI plus four more) raises `AmbiguousEntityError` on
+  facts/growth/compare, naming every successor, with the candidate count
+  matching `area_code_evidence` exactly.
+- **Ranking never leaks or duplicates.** Zero superseded old ids and zero
+  duplicate canonical ids across 200 ranked areas.
+- **Buildings reconcile precisely even where the numbers look surprising at
+  first.** JVC (old 31 → new 274): old code literally still shows 1,863
+  buildings (never rewritten); new code recovers exactly 289 via
+  `project_area_actual` — 288 of those still literally tagged under the old
+  code, 1 recovered purely through its project. The remaining ~1,574 either
+  have no `project_id` at all (can't be resolved, correctly excluded) or
+  belong to projects outside this specific pair's confirmed overlap
+  (legitimately unrelated, not a gap in the mechanism).
+- **Map features never show a superseded area under its own id** — 0 of 7
+  sampled old ids leaked into `/geo/areas`.
+
+### Reviewing detected splits: the interactive CLI
+
+`dxb approve-area-split <old> <new>` is gone — a human had to already know
+both numeric ids, which defeats the point of a *review* step. Replaced by a
+single interactive command:
+
+```
+docker compose exec elt dxb list-area-splits
+```
+
+Arrow keys move the highlight over every `area_code_evidence` pair (pending
+and already-approved, refreshed after every action); Enter **toggles** the
+highlighted pair — approves it if pending, or **reverts** it back to
+pending if already approved (`area_codes.revert_area_split`, symmetric with
+`approve_area_split`) — Esc/Ctrl-C quits. Revert exists specifically because
+Enter-to-approve is fast enough that a misclick needs a one-keystroke undo,
+not a trip to SQL: reverting is exactly as safe as approving, since neither
+one ever touches anything but `area_code_evidence.reviewed` — nothing to
+roll back downstream.

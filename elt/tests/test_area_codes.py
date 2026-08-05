@@ -1,7 +1,8 @@
 """Unit tests for dxb.area_codes: the area-code split detector (audit-only,
 writes area_code_evidence + project_area_actual, never dim_project/
-dim_building/dim_area) and the separate, explicit apply-reviewed step (the
-only code path that backfills dim_project.area_id and cascades to buildings).
+dim_building/dim_area) and the separate, explicit approve/revert step (flips
+area_code_evidence.reviewed true/false — never writes dim_project or
+dim_building either way; project_area_actual is read-time indirection).
 
 No real DB: sessions are MagicMocks: the SQL text is inspected for shape
 (matching the pattern in test_building_geo.py / test_project_geo.py), and
@@ -368,6 +369,25 @@ def test_pending_evidence_filters_unreviewed_ordered_by_new_area():
     assert "order by area_code_evidence.new_area_id" in sql
 
 
+# ---------------------------------------------------------------- all_evidence
+#
+# Backs the interactive `dxb list-area-splits`: unlike pending_evidence, this
+# must NOT filter on reviewed — the toggle loop needs to show already-approved
+# pairs too, so a mistaken approval can be reverted from the same list.
+
+
+def test_all_evidence_does_not_filter_on_reviewed_ordered_pending_first():
+    session = MagicMock()
+    session.scalars.return_value = []
+
+    area_codes.all_evidence(session)
+
+    stmt = session.scalars.call_args[0][0]
+    sql = str(stmt).lower()
+    assert "where" not in sql
+    assert "order by area_code_evidence.reviewed, area_code_evidence.new_area_id" in sql
+
+
 # ------------------------------------------------------- approve_area_split
 #
 # Revision 2 correction: "applying" a reviewed pair is nothing more than
@@ -418,6 +438,59 @@ def test_approve_area_split_never_touches_dim_project_or_dim_building():
     session.get.return_value = row
 
     area_codes.approve_area_split(session, 20, 292)
+
+    session.get.assert_called_once_with(area_codes.AreaCodeEvidence, (20, 292))
+    session.add.assert_not_called()
+    session.execute.assert_not_called()
+
+
+# -------------------------------------------------------- revert_area_split
+#
+# Symmetric with approve_area_split, added for the interactive `dxb
+# list-area-splits`: Enter on an already-approved pair undoes it. Same "only
+# the flag moves" guarantee, in the other direction.
+
+
+def test_revert_area_split_flips_reviewed_false():
+    row = SimpleNamespace(old_area_id=20, new_area_id=292, reviewed=True)
+    session = MagicMock()
+    session.get.return_value = row
+
+    report = area_codes.revert_area_split(session, 20, 292)
+
+    assert row.reviewed is False
+    assert report == {"found": True, "already_reverted": False}
+    session.get.assert_called_once_with(area_codes.AreaCodeEvidence, (20, 292))
+    session.commit.assert_called_once()
+
+
+def test_revert_area_split_is_idempotent_on_already_unreviewed_row():
+    row = SimpleNamespace(old_area_id=20, new_area_id=292, reviewed=False)
+    session = MagicMock()
+    session.get.return_value = row
+
+    report = area_codes.revert_area_split(session, 20, 292)
+
+    assert row.reviewed is False
+    assert report == {"found": True, "already_reverted": True}
+
+
+def test_revert_area_split_missing_pair_reports_not_found():
+    session = MagicMock()
+    session.get.return_value = None
+
+    report = area_codes.revert_area_split(session, 20, 999)
+
+    assert report == {"found": False, "already_reverted": False}
+    session.commit.assert_called_once()
+
+
+def test_revert_area_split_never_touches_dim_project_or_dim_building():
+    row = SimpleNamespace(old_area_id=20, new_area_id=292, reviewed=True)
+    session = MagicMock()
+    session.get.return_value = row
+
+    area_codes.revert_area_split(session, 20, 292)
 
     session.get.assert_called_once_with(area_codes.AreaCodeEvidence, (20, 292))
     session.add.assert_not_called()

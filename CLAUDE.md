@@ -146,6 +146,23 @@ ELT and an `AsyncSession` in the API. See docs/API_DESIGN.md §7b.
   `project_area_actual` is read-time indirection for `dim_project.area_id`,
   consulted at query time; nothing ever overwrites a project's own stored
   `area_id`, even once we're confident we know better.
+- **Resolve "current area" through the project, not through a raw `area_id`
+  join, for anything that could span the area-code migration.** An area's id
+  is not a stable join key: DLD's 2026-07-20 migration proved a single old
+  area can retroactively fan out into several disjoint new ones with no
+  single canonical id to fall back to (21 of 48 split areas, live-confirmed —
+  `docs/AREA_CODE_MIGRATION_ANALYSIS.md`). A project's identity, by contrast,
+  *is* stable — each new code's projects are confirmed disjoint from every
+  other's, so a project always resolves to exactly one place. Concretely:
+  check `project_area_actual` (reviewed) first, fall back to the project's
+  own stored `area_id` next, and only fall back to a raw `area_id` join for
+  genuinely project-less rows (~9.8% of split-area sales) — and even then
+  only when the old area has exactly one reviewed successor; otherwise raise
+  (`AmbiguousEntityError`), never guess. Don't hand-roll this: reuse
+  `transform.area_resolve` on the ELT side and `repositories/base.py`'s
+  `_area_scope_filter` / `expand_area_ids` / `resolve_canonical_area_id` on
+  the API side — both are the canonical, tested implementations of this
+  exact resolution order.
 - **Env-var settings are hermetic in tests on purpose.** `tests/conftest.py`
   has an autouse fixture that clears every `DXB_*`/`SMTP_*`/etc. env var
   before each test, and a `_SETTINGS_DEFAULTS` dict used to build a full

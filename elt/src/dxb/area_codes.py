@@ -23,17 +23,20 @@ Two independent entry points, deliberately not merged:
                              `project_area_actual` (the operational,
                              project-level lookup) — never touches
                              dim_project, dim_building, or dim_area.
-  approve_area_split        explicit, human-triggered
-                             (`dxb approve-area-split`). Flips
-                             `area_code_evidence.reviewed = true` for one
-                             (old, new) pair — the entire "apply" step.
+  approve_area_split /      explicit, human-triggered (the interactive `dxb
+  revert_area_split         list-area-splits` — arrows to move, Enter to
+                             toggle). Flip `area_code_evidence.reviewed`
+                             true/false for one (old, new) pair — the entire
+                             "apply"/"undo" step, symmetric with each other.
                              `project_area_actual` is READ-TIME INDIRECTION,
                              not a mutation target: nothing is ever written
-                             to `dim_project` or `dim_building` by this
-                             mechanism (see `transform.area_resolve` for the
+                             to `dim_project` or `dim_building` by either
+                             direction (see `transform.area_resolve` for the
                              read side). Every resolution path picks up the
-                             new mapping the instant the flag flips — there
-                             is no separate backfill/cascade step.
+                             change the instant the flag flips, either way —
+                             there is no separate backfill/cascade step, and
+                             a mistaken approval is corrected the same way it
+                             was made, no SQL required.
 """
 
 from __future__ import annotations
@@ -285,13 +288,27 @@ def detect_area_code_splits_safe(session: Session) -> dict:
 
 
 def pending_evidence(session: Session) -> list[AreaCodeEvidence]:
-    """Unreviewed (`reviewed=false`) evidence rows, for human review (the
-    `dxb list-area-splits` CLI table)."""
+    """Unreviewed (`reviewed=false`) evidence rows only. Kept separate from
+    `all_evidence` for callers that only ever want to approve, never revert."""
     return list(
         session.scalars(
             select(AreaCodeEvidence)
             .where(AreaCodeEvidence.reviewed.is_(False))
             .order_by(AreaCodeEvidence.new_area_id)
+        )
+    )
+
+
+def all_evidence(session: Session) -> list[AreaCodeEvidence]:
+    """Every evidence row, reviewed or not — pending first — for the
+    interactive review CLI (`dxb list-area-splits`), which lets a human both
+    approve a pending pair and revert an already-approved one in the same
+    arrow-key/Enter loop."""
+    return list(
+        session.scalars(
+            select(AreaCodeEvidence).order_by(
+                AreaCodeEvidence.reviewed, AreaCodeEvidence.new_area_id
+            )
         )
     )
 
@@ -309,8 +326,9 @@ def approve_area_split(session: Session, old_area_id: int, new_area_id: int) -> 
     backfill/cascade step to run.
 
     Idempotent: flipping an already-reviewed pair is a no-op (reported via
-    `already_reviewed`). Explicit, human-triggered (`dxb approve-area-split`)
-    — never wired into the automatic pipeline.
+    `already_reviewed`). Explicit, human-triggered (the interactive `dxb
+    list-area-splits`) — never wired into the automatic pipeline. See
+    `revert_area_split` to undo a mistaken approval.
     """
     row = session.get(AreaCodeEvidence, (old_area_id, new_area_id))
     if row is None:
@@ -326,3 +344,34 @@ def approve_area_split(session: Session, old_area_id: int, new_area_id: int) -> 
         already_reviewed,
     )
     return {"found": True, "already_reviewed": already_reviewed}
+
+
+def revert_area_split(session: Session, old_area_id: int, new_area_id: int) -> dict:
+    """Undo one approval: flip `area_code_evidence.reviewed` back to `false`
+    for (old_area_id, new_area_id) — symmetric with `approve_area_split`, the
+    entire "undo" step.
+
+    A mistaken approval is corrected exactly the same way it was made,
+    because nothing else was ever written: `project_area_actual`'s rows for
+    this pair stop being consulted by every resolution path (DimCaches,
+    geocoding containment, marts, API) the instant this flag flips back —
+    there is nothing to roll back, un-write, or backfill. `dim_project` and
+    `dim_building` were never touched either way.
+
+    Idempotent: reverting an already-unreviewed (or never-approved) pair is a
+    no-op (reported via `already_reverted`).
+    """
+    row = session.get(AreaCodeEvidence, (old_area_id, new_area_id))
+    if row is None:
+        session.commit()
+        return {"found": False, "already_reverted": False}
+    already_reverted = not row.reviewed
+    row.reviewed = False
+    session.commit()
+    log.info(
+        "area code split reverted: old_area=%s new_area=%s (was already reverted=%s)",
+        old_area_id,
+        new_area_id,
+        already_reverted,
+    )
+    return {"found": True, "already_reverted": already_reverted}

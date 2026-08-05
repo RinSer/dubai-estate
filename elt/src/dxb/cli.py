@@ -278,73 +278,85 @@ def detect_area_splits() -> None:
         )
 
 
-@app.command("list-area-splits")
-def list_area_splits() -> None:
-    """List pending (reviewed=false) area-code-split evidence for human
-    review. Nothing redirects — every resolution path ignores an unreviewed
-    pair — until a row is flipped to reviewed=true via
-    `approve-area-split`."""
+def _area_split_label(session, row) -> str:
     from dxb_core.models import DimArea
 
-    from dxb.area_codes import pending_evidence
-    from dxb.db.engine import get_session
-
-    with get_session() as session:
-        rows = pending_evidence(session)
-        if not rows:
-            typer.echo("no pending area-code-split evidence")
-            return
-        header = (
-            f"{'old area':<32} {'new area':<32} {'overlap%':>8} {'txns':>8} "
-            f"{'projects':>8}  first_seen"
-        )
-        typer.echo(header)
-        typer.echo("-" * len(header))
-        for row in rows:
-            old = session.get(DimArea, row.old_area_id)
-            new = session.get(DimArea, row.new_area_id)
-            old_label = (
-                f"{old.name_en} ({old.dld_area_code or old.id})"
-                if old
-                else str(row.old_area_id)
-            )
-            new_label = (
-                f"{new.name_en} ({new.dld_area_code or new.id})"
-                if new
-                else str(row.new_area_id)
-            )
-            typer.echo(
-                f"{old_label:<32} {new_label:<32} "
-                f"{row.evidence_project_overlap_pct or 0:>8} "
-                f"{row.evidence_txn_count:>8} "
-                f"{len(row.evidence_project_ids or []):>8}  {row.first_seen_new_code}"
-            )
+    old = session.get(DimArea, row.old_area_id)
+    new = session.get(DimArea, row.new_area_id)
+    old_label = (
+        f"{old.name_en} ({old.dld_area_code or old.id})"
+        if old
+        else str(row.old_area_id)
+    )
+    new_label = (
+        f"{new.name_en} ({new.dld_area_code or new.id})"
+        if new
+        else str(row.new_area_id)
+    )
+    status = "APPROVED" if row.reviewed else "pending "
+    return (
+        f"[{status}] {old_label} -> {new_label}  "
+        f"({row.evidence_project_overlap_pct or 0}% overlap, "
+        f"{row.evidence_txn_count} txns, "
+        f"{len(row.evidence_project_ids or [])} projects, "
+        f"first seen {row.first_seen_new_code})"
+    )
 
 
-@app.command("approve-area-split")
-def approve_area_split_cmd(
-    old_area_id: int = typer.Argument(help="old_area_id from list-area-splits"),
-    new_area_id: int = typer.Argument(help="new_area_id from list-area-splits"),
-) -> None:
-    """Approve one reviewed area-code-split pair: flips
-    area_code_evidence.reviewed = true for (old_area_id, new_area_id) — the
-    entire "apply" step (docs/AREA_CODE_MIGRATION_ANALYSIS.md). No dim_project
-    or dim_building write happens, ever: project_area_actual is read-time
+@app.command("list-area-splits")
+def list_area_splits() -> None:
+    """Interactively review area-code-split evidence: arrows move the
+    highlight, Enter toggles the highlighted pair — approves a pending one or
+    reverts an already-approved one back to pending — Esc/Ctrl-C quits.
+
+    This is the entire "apply"/"undo" step (docs/AREA_CODE_MIGRATION_
+    ANALYSIS.md), symmetric in both directions: no dim_project, dim_building,
+    or dim_area write ever happens. project_area_actual is read-time
     indirection, so every resolution path (building match key, geocoding
-    containment, marts) picks up the new mapping on its next read as soon as
-    this flag flips. Review candidates with `list-area-splits` first."""
-    from dxb.area_codes import approve_area_split
+    containment, marts, API) picks up the change on its next read as soon as
+    `area_code_evidence.reviewed` flips, either way — a mistaken approval is
+    corrected the same way it was made, no SQL required.
+    """
+    import questionary
+
+    from dxb.area_codes import all_evidence, approve_area_split, revert_area_split
     from dxb.db.engine import get_session
 
-    with get_session() as session:
-        report = approve_area_split(session, old_area_id, new_area_id)
-    if not report["found"]:
-        typer.echo(f"no area_code_evidence row for ({old_area_id}, {new_area_id})")
-        raise typer.Exit(1)
-    if report["already_reviewed"]:
-        typer.echo("already reviewed — no change")
-    else:
-        typer.echo(f"approved: old_area={old_area_id} new_area={new_area_id}")
+    while True:
+        with get_session() as session:
+            rows = all_evidence(session)
+            if not rows:
+                typer.echo("no area-code-split evidence yet")
+                return
+
+            choices = [
+                questionary.Choice(
+                    _area_split_label(session, row),
+                    value=(row.old_area_id, row.new_area_id, row.reviewed),
+                )
+                for row in rows
+            ]
+            picked = questionary.select(
+                f"{len(rows)} pairs — arrows to move, Enter to approve/revert, "
+                "Esc/Ctrl-C to quit:",
+                choices=choices,
+            ).ask()
+
+            if picked is None:
+                return
+
+            old_area_id, new_area_id, was_reviewed = picked
+            if was_reviewed:
+                report = revert_area_split(session, old_area_id, new_area_id)
+                verb = "reverted"
+            else:
+                report = approve_area_split(session, old_area_id, new_area_id)
+                verb = "approved"
+
+        if not report["found"]:
+            typer.echo("that pair changed since the list was loaded — refreshing")
+        else:
+            typer.echo(f"{verb}: old_area={old_area_id} new_area={new_area_id}")
 
 
 @app.command()
