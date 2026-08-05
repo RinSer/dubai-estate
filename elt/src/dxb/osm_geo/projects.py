@@ -92,9 +92,24 @@ def backfill_area_centroids(session: Session) -> int:
     return count
 
 
-def _validated_point(session: Session, area_id: int, candidate: dict) -> tuple | None:
-    """Return (lon, lat) if the candidate falls inside the project's area
-    (or near its centroid when no boundary exists), else None."""
+def _validated_point(
+    session: Session, area_id: int, candidate: dict, project_id: int | None = None
+) -> tuple | None:
+    """Return (lon, lat) if the candidate falls inside the project's
+    CANONICAL area (or near its centroid when no boundary exists), else None.
+
+    Same layered resolution as everywhere else (docs/
+    AREA_CODE_MIGRATION_ANALYSIS.md "One mechanism, used everywhere" /
+    "Schema (revised)"). `project_area_actual` is READ-TIME INDIRECTION, not
+    a mutation target — nothing here ever writes dim_project. Resolution
+    order: (1) `project_id`'s `project_area_actual` row, if its pair is
+    `reviewed=true` — the live, human-confirmed answer; (2) else the
+    project's own stored `area_id` (never rewritten by this mechanism); (3)
+    else `area_id`'s single unambiguous reviewed successor; (4) else
+    `area_id` unchanged. So a project whose area has flipped to a new DLD
+    code with no geometry yet still validates against real, already-geocoded
+    geometry instead of a polygon that will never exist for the old row.
+    """
     lat, lon = float(candidate["lat"]), float(candidate["lon"])
     chk = session.execute(
         text(
@@ -113,10 +128,27 @@ def _validated_point(session: Session, area_id: int, candidate: dict) -> tuple |
                     :radius
                 ) AS near_centroid
             FROM dim_area
-            WHERE id = :aid
+            WHERE id = coalesce(
+                (SELECT pam.new_area_id FROM project_area_actual pam
+                    JOIN area_code_evidence ace
+                      ON ace.old_area_id = pam.old_area_id
+                     AND ace.new_area_id = pam.new_area_id
+                    WHERE pam.project_id = :pid AND ace.reviewed),
+                :aid,
+                (SELECT max(new_area_id) FROM area_code_evidence
+                    WHERE old_area_id = :aid AND reviewed
+                    HAVING count(*) = 1),
+                :aid
+            )
             """
         ),
-        {"lon": lon, "lat": lat, "aid": area_id, "radius": _CENTROID_RADIUS_M},
+        {
+            "lon": lon,
+            "lat": lat,
+            "aid": area_id,
+            "radius": _CENTROID_RADIUS_M,
+            "pid": project_id,
+        },
     ).one()
     if chk.in_boundary or chk.near_centroid:
         return lon, lat
@@ -174,7 +206,7 @@ def enrich_project_points(session: Session, limit: int | None = None) -> dict:
             if candidate is None:
                 report["no_result"] += 1
                 continue
-            point = _validated_point(session, row.area_id, candidate)
+            point = _validated_point(session, row.area_id, candidate, row.id)
             if point is None:
                 report["outside_area"] += 1
                 continue

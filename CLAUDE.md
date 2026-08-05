@@ -133,6 +133,19 @@ ELT and an `AsyncSession` in the API. See docs/API_DESIGN.md §7b.
   `is_government` flag so queries can filter to verified government data
   only. A new data source needs a new entry in `SOURCES` in
   `elt/src/dxb/db/engine.py` before it's used anywhere.
+- **Never update a value that came from an external source with our own
+  inferred one.** The only legitimate way a stored value changes is the
+  source itself reporting something different on a later import — a real
+  backfill/refresh — never our own derived logic overwriting what it
+  reported. When our own analysis concludes "this row's true current meaning
+  differs from what's literally stored" (e.g. inferring that a project's DLD
+  area code has effectively moved, before DLD's own feed says so), the fix is
+  an indirection table or auxiliary metadata that downstream reads join
+  against — never a rewrite of the original row. This came up for real in the
+  2026-07-20 area-code migration (docs/AREA_CODE_MIGRATION_ANALYSIS.md):
+  `project_area_actual` is read-time indirection for `dim_project.area_id`,
+  consulted at query time; nothing ever overwrites a project's own stored
+  `area_id`, even once we're confident we know better.
 - **Env-var settings are hermetic in tests on purpose.** `tests/conftest.py`
   has an autouse fixture that clears every `DXB_*`/`SMTP_*`/etc. env var
   before each test, and a `_SETTINGS_DEFAULTS` dict used to build a full

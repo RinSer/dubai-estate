@@ -403,9 +403,20 @@ def test_missing_ids_are_computed_across_the_whole_result_not_the_page():
     class FakeSession:
         async def execute(self, stmt):
             sql = str(stmt).lower()
-            if "distinct" in sql:
-                return SimpleNamespace(all=lambda: [(20,), (31,)])
-            return SimpleNamespace(all=lambda: [page_row])
+            if "mart_area_monthly" in sql:
+                # The main area_monthly query (canonical-area self-join,
+                # AREA_CODE_MIGRATION_ANALYSIS.md) — distinguished from the
+                # area_code_evidence resolution queries below by the
+                # mart_area_monthly table it selects from. "distinct" (the
+                # with-data probe derived from this same query) is checked
+                # first since it also contains "mart_area_monthly".
+                if "distinct" in sql:
+                    return SimpleNamespace(all=lambda: [(20,), (31,)])
+                return SimpleNamespace(all=lambda: [page_row])
+            # area_code_evidence resolution queries (expand_area_ids /
+            # _canonical_map): nothing in this test is superseded, so every
+            # requested id has zero reviewed successors and maps to itself.
+            return SimpleNamespace(all=lambda: [])
 
     repo = MartRepository(FakeSession(), build_settings())
     result = asyncio.run(repo.area_monthly(area_ids=[20, 31, 999999], limit=1))

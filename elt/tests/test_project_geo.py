@@ -158,6 +158,44 @@ def test_precision_skips_already_validated(monkeypatch):
     client.search.assert_not_called()
 
 
+# -------------------------------------------------- canonical-area resolution
+
+
+def test_validated_point_resolves_through_reviewed_project_actual_first():
+    """docs/AREA_CODE_MIGRATION_ANALYSIS.md: containment must check a
+    reviewed project_area_actual mapping for the project first (read-time
+    indirection), then the old area's single unambiguous successor, before
+    falling back to the project's own raw area_id."""
+    session = MagicMock()
+    session.execute.return_value.one.return_value = _row(
+        in_boundary=True, near_centroid=False
+    )
+
+    point = projects._validated_point(
+        session, area_id=20, candidate={"lat": "25.1", "lon": "55.2"}, project_id=99
+    )
+
+    assert point == (55.2, 25.1)
+    sql = str(session.execute.call_args[0][0]).lower()
+    assert "project_area_actual" in sql
+    assert "area_code_evidence" in sql
+    params = session.execute.call_args[0][1]
+    assert params["aid"] == 20  # the raw id is still passed through as-is
+    assert params["pid"] == 99
+
+
+def test_validated_point_project_id_defaults_to_none():
+    session = MagicMock()
+    session.execute.return_value.one.return_value = _row(
+        in_boundary=True, near_centroid=False
+    )
+
+    projects._validated_point(session, area_id=20, candidate={"lat": "1", "lon": "2"})
+
+    params = session.execute.call_args[0][1]
+    assert params["pid"] is None
+
+
 # --------------------------------------------------------- non-fatal hook
 
 

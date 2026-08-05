@@ -55,7 +55,8 @@ def enrich_buildings(
     rows = session.execute(
         text(
             f"""
-            SELECT b.id, b.name_en, a.name_en AS area_name, a.id AS area_id
+            SELECT b.id, b.name_en, a.name_en AS area_name, a.id AS area_id,
+                   b.project_id
             FROM dim_building b
             JOIN dim_area a ON a.id = b.area_id
             WHERE a.centroid IS NOT NULL AND {method_filter}
@@ -93,7 +94,7 @@ def enrich_buildings(
                 continue
             loc = cand["geometry"]["location"]
             lat, lng = float(loc["lat"]), float(loc["lng"])
-            if not _in_area(session, row.area_id, lat, lng):
+            if not _in_area(session, row.area_id, lat, lng, project_id=row.project_id):
                 report["outside_area"] += 1
                 continue
             session.execute(
@@ -129,7 +130,26 @@ def enrich_buildings(
     return report
 
 
-def _in_area(session: Session, area_id: int, lat: float, lng: float) -> bool:
+def _in_area(
+    session: Session,
+    area_id: int,
+    lat: float,
+    lng: float,
+    project_id: int | None = None,
+) -> bool:
+    """Validate against the CANONICAL area, not necessarily `area_id` itself
+    (docs/AREA_CODE_MIGRATION_ANALYSIS.md "One mechanism, used everywhere" /
+    "Schema (revised)"). `project_area_actual` is READ-TIME INDIRECTION, not
+    a mutation target — nothing here or anywhere in this mechanism ever
+    writes `dim_project`/`dim_building`. Resolution order: (1) the building's
+    project has a `project_area_actual` row whose pair is `reviewed=true` in
+    `area_code_evidence` — the live, human-confirmed answer; (2) else the
+    project's own stored `area_id`, exactly as reported; (3) else `area_id`'s
+    single unambiguous reviewed successor; (4) else `area_id` unchanged. A
+    building/project whose area has flipped to a new, not-yet-geocoded DLD
+    code would otherwise always fail containment against a polygon that will
+    never exist for that old row — resolving forward lets it validate
+    against real, already-geocoded geometry instead."""
     chk = session.execute(
         text(
             """
@@ -137,10 +157,28 @@ def _in_area(session: Session, area_id: int, lat: float, lng: float) -> bool:
                      ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)), false)
                  OR ST_DWithin(centroid,
                      ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography, :r)
-            FROM dim_area WHERE id = :aid
+            FROM dim_area
+            WHERE id = coalesce(
+                (SELECT pam.new_area_id FROM project_area_actual pam
+                    JOIN area_code_evidence ace
+                      ON ace.old_area_id = pam.old_area_id
+                     AND ace.new_area_id = pam.new_area_id
+                    WHERE pam.project_id = :pid AND ace.reviewed),
+                (SELECT p.area_id FROM dim_project p WHERE p.id = :pid),
+                (SELECT max(new_area_id) FROM area_code_evidence
+                    WHERE old_area_id = :aid AND reviewed
+                    HAVING count(*) = 1),
+                :aid
+            )
             """
         ),
-        {"lng": lng, "lat": lat, "aid": area_id, "r": _CENTROID_RADIUS_M},
+        {
+            "lng": lng,
+            "lat": lat,
+            "aid": area_id,
+            "r": _CENTROID_RADIUS_M,
+            "pid": project_id,
+        },
     ).scalar()
     return bool(chk)
 
@@ -168,9 +206,28 @@ SELECT med.n AS n,
        coalesce((SELECT percentile_cont(0.9) WITHIN GROUP (
                     ORDER BY ST_Distance(pts.geog, med.m::geography))
                  FROM pts), 0) AS spread_m,
+       -- Same canonical-area resolution as _in_area above: validate against
+       -- the project's CANONICAL area, not necessarily its own stored one.
+       -- The project IS the entity here (:pid is its own id), so this is the
+       -- same 4-tier chain: reviewed project_area_actual first, else the
+       -- project's own stored area_id (:area_id, never rewritten by this
+       -- mechanism), else :area_id's single unambiguous reviewed successor,
+       -- else :area_id itself.
        (SELECT coalesce(ST_Contains(a.boundary::geometry, med.m), false)
              OR ST_DWithin(a.centroid, med.m::geography, :r)
-        FROM dim_area a WHERE a.id = :area_id) AS in_area
+        FROM dim_area a
+        WHERE a.id = coalesce(
+            (SELECT pam.new_area_id FROM project_area_actual pam
+                JOIN area_code_evidence ace
+                  ON ace.old_area_id = pam.old_area_id
+                 AND ace.new_area_id = pam.new_area_id
+                WHERE pam.project_id = :pid AND ace.reviewed),
+            :area_id,
+            (SELECT max(new_area_id) FROM area_code_evidence
+                WHERE old_area_id = :area_id AND reviewed
+                HAVING count(*) = 1),
+            :area_id
+        )) AS in_area
 FROM med
 WHERE med.m IS NOT NULL
 """

@@ -72,9 +72,17 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    # No published port, same as api — nginx fronts both.
-    expose:
-      - "8100"
+    # The public path is nginx (TLS, rate-limited) — but nginx's cert is
+    # self-signed, which most MCP/HTTP clients refuse to trust without extra
+    # config. This second binding is loopback-only ("127.0.0.1:", not
+    # "0.0.0.0:") so it is reachable only from this machine, never the LAN,
+    # and exists purely so local tooling (e.g. `claude mcp add`) can reach the
+    # server over plain HTTP without a TLS-trust dance. It does NOT skip
+    # auth — DXB_MCP_CLIENT_API_KEYS is still enforced identically on this
+    # port (see mcp/security.py: the middleware wraps the whole ASGI app,
+    # not a per-transport branch).
+    ports:
+      - "127.0.0.1:8100:8100"
     volumes:
       - ./mcp/src:/app/src # dev: live code without rebuild (mirrors elt/api)
     healthcheck:

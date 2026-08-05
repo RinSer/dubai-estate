@@ -50,8 +50,16 @@ class GeoRepository(BaseRepository):
             DimArea.boundary.isnot(None).label("has_boundary"),
             func.ST_AsGeoJSON(geom).label("geometry"),
         ).where(geom.isnot(None))
+        # A superseded area's own geometry is never drawn as its own map
+        # feature — its community is already represented by the canonical
+        # area's polygon/point (AREA_CODE_MIGRATION_ANALYSIS.md /
+        # OSM_AREA_GEO_ENRICHMENT.md). This holds for every old area,
+        # unambiguous or not. Requesting either the old or the new id below
+        # (via `expand_area_ids`, which raises on a 2+-successor old id) still
+        # resolves to the one canonical feature.
+        stmt = self._exclude_superseded_areas(stmt)
         if area_ids:
-            stmt = stmt.where(DimArea.id.in_(area_ids))
+            stmt = stmt.where(DimArea.id.in_(await self.expand_area_ids(area_ids)))
 
         rows = (await self._session.execute(stmt)).all()
 
@@ -96,25 +104,48 @@ class GeoRepository(BaseRepository):
         month_to: date | None,
         min_sample: int,
     ) -> dict[int, dict]:
-        """Most recent qualifying mart month per area, for map styling."""
+        """Most recent qualifying mart month per area, for map styling.
+
+        Keyed by the CANONICAL area id (itself, or its sole reviewed
+        successor when unambiguous — see `BaseRepository._canonical_area_id_expr`),
+        not the mart's raw `area_id`, so a canonical area's feature picks up
+        its predecessor's most recent activity too if the mart itself still
+        has any residual under the old id. If both an old and new code happen
+        to have a row in the same latest month, one of them (not a sum of
+        both) is shown here — full precision comes from the mart already
+        being rebuilt project-first-correct; this belt-and-suspenders query
+        only guarantees one feature per community, not a merged total. A
+        2+-successor old area's residual is excluded outright (same as
+        `AnalyticsRepository.ranking`) rather than canonicalized, since the
+        `LIMIT 1` in `_canonical_area_id_expr` would otherwise pick one
+        successor arbitrarily — and that old area's own feature is dropped by
+        `areas_geojson`'s exclusion filter anyway, so it would never be shown
+        under its own id either way.
+        """
         m = MartAreaMonthly
-        stmt = select(
-            m.area_id,
-            m.month,
-            m.usage,
-            m.sale_median_price_m2,
-            m.sale_cnt,
-            m.rent_median_annual_m2,
-            m.rent_cnt,
-            m.gross_yield_pct,
-        ).where(m.month <= date.today(), m.sale_cnt >= min_sample)
+        canonical_id = self._canonical_area_id_expr()
+        stmt = (
+            select(
+                canonical_id.label("area_id"),
+                m.month,
+                m.usage,
+                m.sale_median_price_m2,
+                m.sale_cnt,
+                m.rent_median_annual_m2,
+                m.rent_cnt,
+                m.gross_yield_pct,
+            )
+            .join(DimArea, DimArea.id == m.area_id)
+            .where(m.month <= date.today(), m.sale_cnt >= min_sample)
+        )
+        stmt = self._exclude_ambiguous_old_areas(stmt)
         if usage:
             stmt = stmt.where(m.usage == usage)
         if month_from is not None:
             stmt = stmt.where(m.month >= month_from)
         if month_to is not None:
             stmt = stmt.where(m.month <= month_to)
-        stmt = stmt.order_by(m.area_id.asc(), m.month.desc())
+        stmt = stmt.order_by(canonical_id.asc(), m.month.desc())
 
         out: dict[int, dict] = {}
         for r in (await self._session.execute(stmt)).all():
@@ -218,7 +249,17 @@ class GeoRepository(BaseRepository):
             func.ST_AsGeoJSON(DimBuilding.location).label("geometry"),
         ).where(DimBuilding.location.isnot(None))
         if area_id is not None:
-            stmt = stmt.where(DimBuilding.area_id == area_id)
+            # Widened so either the old or the new area code finds every
+            # building in the community, PLUS every building whose PROJECT
+            # resolves to this area via `project_area_actual` (reviewed) —
+            # the same project-anchored augmentation as facts.py, needed
+            # because `dim_building.area_id` is never rewritten
+            # (AREA_CODE_MIGRATION_ANALYSIS.md).
+            stmt = stmt.where(
+                await self._area_scope_filter(
+                    DimBuilding.area_id, DimBuilding.project_id, area_id
+                )
+            )
         if project_id is not None:
             stmt = stmt.where(DimBuilding.project_id == project_id)
         if building_ids:

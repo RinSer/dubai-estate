@@ -137,7 +137,29 @@ With `DXB_MCP_CLIENT_API_KEYS` unset, **every** call 401s — fails closed, not
 open — until at least one key is configured (or `DXB_MCP_AUTH_DISABLED=1` for
 local development only; never beyond `localhost`).
 
-## Authentication
+### Connecting Claude Code directly
+
+nginx's cert is self-signed (see above), which most MCP clients — including
+Claude Code — refuse to trust without extra TLS config. So `mcp` also
+publishes a **loopback-only** plain-HTTP port (`docker-compose.yml`:
+`127.0.0.1:8100:8100`, not `0.0.0.0:`) purely for local tooling: unreachable
+from the LAN, but the `X-API-Key` check still applies identically — the auth
+middleware wraps the whole app, not one transport.
+
+```bash
+claude mcp add --transport http dubai-estate "http://localhost:8100/mcp" \
+  -H "X-API-Key: <plaintext client key>" -s user
+```
+
+`-s user` makes it available in every Claude Code session on this machine,
+not just this repo (`-s local` scopes it to sessions started in this
+directory instead). Either way it is stored **outside git** — `-s project`
+would write the header, including the plaintext key, into a shareable
+`.mcp.json`, which is not what you want. Verify with `claude mcp list`.
+
+One thing this doesn't do: a session already running when you register the
+server won't pick it up — MCP servers load at session start, so only *new*
+sessions see it.
 
 Both the REST API and the MCP server authenticate with API keys — **three**
 key variables in total, across **two** independent hops, and they are easy to

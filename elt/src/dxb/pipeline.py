@@ -25,6 +25,7 @@ from tenacity import (
 )
 
 from dxb import alerts
+from dxb.area_codes import detect_area_code_splits_safe
 from dxb.collectors.client import DldClient
 from dxb.collectors.dld import (
     collect_areas,
@@ -80,6 +81,14 @@ def run_pipeline(
                     session, client, sid, endpoint, d_from, d_to
                 )
         report["transform"] = transform_all(session, settings.source_url)
+        # Non-fatal, like the geo hooks below: finds candidate area-code
+        # splits and refreshes area_code_evidence + project_area_actual only
+        # — never touches dim_project, dim_building, or dim_area itself, so
+        # it can never change what rebuild_marts aggregates. Run right before
+        # the mart rebuild (build order per docs/AREA_CODE_MIGRATION_ANALYSIS.md)
+        # so same-day detections are available for review before the next
+        # rebuild if desired.
+        report["area_code_splits"] = detect_area_code_splits_safe(session)
         report["marts"] = rebuild_marts(session)
         # Non-fatal: a newly-seen area name can create an un-enriched
         # dim_area stub on any run; never lets a geocoding hiccup fail or

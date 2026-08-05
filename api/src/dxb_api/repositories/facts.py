@@ -106,7 +106,16 @@ class FactRepository(BaseRepository):
         )
 
         if area_id is not None:
-            stmt = stmt.where(f.area_id == area_id)
+            # Either the old or the new area code returns the same combined
+            # set of transactions, each row counted exactly once; PLUS every
+            # row whose PROJECT resolves (via `project_area_actual`, reviewed)
+            # to this area, which is what correctly attributes a pre-migration
+            # row to one of several successors of an ambiguous old area — the
+            # area-level redirect alone cannot do that
+            # (AREA_CODE_MIGRATION_ANALYSIS.md).
+            stmt = stmt.where(
+                await self._area_scope_filter(f.area_id, f.project_id, area_id)
+            )
         if project_id is not None:
             stmt = stmt.where(f.project_id == project_id)
         if building_id is not None:
@@ -209,7 +218,13 @@ class FactRepository(BaseRepository):
         )
 
         if area_id is not None:
-            stmt = stmt.where(f.area_id == area_id)
+            # Same redirect as list_transactions. Rents are unaffected by the
+            # migration today (Ejari has not adopted the new codes) but this
+            # applies unconditionally per direction, not as a special case —
+            # nothing changes here when Ejari does eventually catch up.
+            stmt = stmt.where(
+                await self._area_scope_filter(f.area_id, f.project_id, area_id)
+            )
         if project_id is not None:
             stmt = stmt.where(f.project_id == project_id)
         if start_date_from is not None:

@@ -254,6 +254,99 @@ def enrich_project_geo(
     typer.echo(report)
 
 
+@app.command("detect-area-splits")
+def detect_area_splits() -> None:
+    """Run the area-code-split detector standalone and print a summary
+    (docs/AREA_CODE_MIGRATION_ANALYSIS.md). The daily pipeline already runs
+    this automatically and non-fatally, right before the mart rebuild — this
+    command is for re-running on demand (e.g. after a backfill). Only ever
+    refreshes area_code_evidence and project_area_actual; never touches
+    dim_project, dim_building, or dim_area."""
+    from dxb.area_codes import detect_area_code_splits
+    from dxb.db.engine import get_session
+
+    with get_session() as session:
+        report = detect_area_code_splits(session)
+    typer.echo(
+        f"candidates examined: {report['candidates']}, "
+        f"splits detected/refreshed: {report['detected']}"
+    )
+    for pair in report["pairs"]:
+        typer.echo(
+            f"  old_area={pair['old_area_id']:<6} new_area={pair['new_area_id']:<6} "
+            f"overlap={pair['overlap_pct']}%"
+        )
+
+
+@app.command("list-area-splits")
+def list_area_splits() -> None:
+    """List pending (reviewed=false) area-code-split evidence for human
+    review. Nothing redirects — every resolution path ignores an unreviewed
+    pair — until a row is flipped to reviewed=true via
+    `approve-area-split`."""
+    from dxb_core.models import DimArea
+
+    from dxb.area_codes import pending_evidence
+    from dxb.db.engine import get_session
+
+    with get_session() as session:
+        rows = pending_evidence(session)
+        if not rows:
+            typer.echo("no pending area-code-split evidence")
+            return
+        header = (
+            f"{'old area':<32} {'new area':<32} {'overlap%':>8} {'txns':>8} "
+            f"{'projects':>8}  first_seen"
+        )
+        typer.echo(header)
+        typer.echo("-" * len(header))
+        for row in rows:
+            old = session.get(DimArea, row.old_area_id)
+            new = session.get(DimArea, row.new_area_id)
+            old_label = (
+                f"{old.name_en} ({old.dld_area_code or old.id})"
+                if old
+                else str(row.old_area_id)
+            )
+            new_label = (
+                f"{new.name_en} ({new.dld_area_code or new.id})"
+                if new
+                else str(row.new_area_id)
+            )
+            typer.echo(
+                f"{old_label:<32} {new_label:<32} "
+                f"{row.evidence_project_overlap_pct or 0:>8} "
+                f"{row.evidence_txn_count:>8} "
+                f"{len(row.evidence_project_ids or []):>8}  {row.first_seen_new_code}"
+            )
+
+
+@app.command("approve-area-split")
+def approve_area_split_cmd(
+    old_area_id: int = typer.Argument(help="old_area_id from list-area-splits"),
+    new_area_id: int = typer.Argument(help="new_area_id from list-area-splits"),
+) -> None:
+    """Approve one reviewed area-code-split pair: flips
+    area_code_evidence.reviewed = true for (old_area_id, new_area_id) — the
+    entire "apply" step (docs/AREA_CODE_MIGRATION_ANALYSIS.md). No dim_project
+    or dim_building write happens, ever: project_area_actual is read-time
+    indirection, so every resolution path (building match key, geocoding
+    containment, marts) picks up the new mapping on its next read as soon as
+    this flag flips. Review candidates with `list-area-splits` first."""
+    from dxb.area_codes import approve_area_split
+    from dxb.db.engine import get_session
+
+    with get_session() as session:
+        report = approve_area_split(session, old_area_id, new_area_id)
+    if not report["found"]:
+        typer.echo(f"no area_code_evidence row for ({old_area_id}, {new_area_id})")
+        raise typer.Exit(1)
+    if report["already_reviewed"]:
+        typer.echo("already reviewed — no change")
+    else:
+        typer.echo(f"approved: old_area={old_area_id} new_area={new_area_id}")
+
+
 @app.command()
 def stats() -> None:
     """Row counts and a quick market sanity report."""

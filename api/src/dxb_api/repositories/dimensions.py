@@ -10,7 +10,7 @@ from dxb_core.models import (
     DimPropertyType,
     DimSource,
 )
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 
 from dxb_api.errors import NotFoundError, ValidationError
 from dxb_api.repositories.base import BaseRepository
@@ -88,7 +88,23 @@ class DimensionRepository(BaseRepository):
         ).first()
         if row is None:
             raise NotFoundError(f"No area with id {area_id}", area_id=area_id)
-        return self._area_row(row)
+        result = self._area_row(row)
+
+        # Lineage (AREA_CODE_MIGRATION_ANALYSIS.md, revision 2). Both
+        # directions are always computed rather than branching on
+        # current-vs-old: a current area normally has predecessors and no
+        # successors, an old area the reverse, and this stays correct without
+        # guessing which case a given id is before looking it up. The lookup
+        # itself is never redirected — an old area's own id, name, and code
+        # are returned unchanged, just annotated with where its aggregated
+        # figures live. `superseded_by` is a LIST (not a single object): an
+        # old area can have several current successors (21 of 48 split areas
+        # do), and this always shows the full set — even for the 27
+        # unambiguous ones, for consistency — never picking one arbitrarily.
+        result["superseded_areas"] = await self.superseded_predecessors(area_id)
+        successors = await self.successors_of(area_id)
+        result["superseded_by"] = successors or None
+        return result
 
     @staticmethod
     def _area_row(r) -> dict:
@@ -152,7 +168,24 @@ class DimensionRepository(BaseRepository):
         limit, offset = self._bounded(limit, offset)
         stmt = select(*self._project_cols())
         if area_id is not None:
-            stmt = stmt.where(DimProject.area_id == area_id)
+            # `dim_project.area_id` is NEVER rewritten by this mechanism — a
+            # migrated project keeps showing its ORIGINAL area_id forever —
+            # so a plain match on a new/canonical area id would miss every
+            # project the detector has identified and a human has reviewed.
+            # OR'd with the read-time indirection, not replacing the literal
+            # match: querying an OLD id still returns exactly its own literal
+            # (shrinking, historical) snapshot, since `project_area_actual`'s
+            # `new_area_id` is only ever a new code and this subquery is
+            # simply empty for an old one. No ambiguity check needed here —
+            # a project resolves to exactly one place by construction
+            # (AREA_CODE_MIGRATION_ANALYSIS.md, "OR'd with indirection,
+            # never ambiguous").
+            stmt = stmt.where(
+                or_(
+                    DimProject.area_id == area_id,
+                    DimProject.id.in_(self._project_area_actual_subq(area_id)),
+                )
+            )
         if developer_id is not None:
             stmt = stmt.where(DimProject.developer_id == developer_id)
         if status:
@@ -226,7 +259,13 @@ class DimensionRepository(BaseRepository):
     ) -> tuple[int, dict]:
         base = select(DimProject.id, DimProject.name_en)
         if area_id is not None:
-            base = base.where(DimProject.area_id == area_id)
+            # Same OR'd-indirection match as `list_projects` above.
+            base = base.where(
+                or_(
+                    DimProject.area_id == area_id,
+                    DimProject.id.in_(self._project_area_actual_subq(area_id)),
+                )
+            )
         if is_master is not None:
             base = base.where(DimProject.is_master.is_(is_master))
         return await self._resolve(
@@ -355,7 +394,16 @@ class DimensionRepository(BaseRepository):
         rather than the exception."""
         base = select(DimBuilding.id, DimBuilding.name_en)
         if area_id is not None:
-            base = base.where(DimBuilding.area_id == area_id)
+            # Same OR'd-indirection match as `list_projects`, through the
+            # building's own `project_id` — a building with no `project_id`
+            # simply has no indirection to add, literal match only
+            # (AREA_CODE_MIGRATION_ANALYSIS.md).
+            base = base.where(
+                or_(
+                    DimBuilding.area_id == area_id,
+                    DimBuilding.project_id.in_(self._project_area_actual_subq(area_id)),
+                )
+            )
         return await self._resolve(
             query=q,
             name_col=DimBuilding.name_en,

@@ -16,6 +16,11 @@ image and puts it behind nginx at `https://localhost/mcp` — see the root
 [Authentication](../README.md#authentication) for the two key variables this
 service needs (`DXB_MCP_API_KEY` outbound, `DXB_MCP_CLIENT_API_KEYS` inbound).
 
+For local tooling that can't trust nginx's self-signed cert (`claude mcp add`
+and similar), compose also publishes this service directly on
+`127.0.0.1:8100` — loopback-only, auth still enforced, just no TLS. See the
+root README's "Connecting Claude Code directly".
+
 Locally, from this directory: `uv run python -m dxb_mcp`. Defaults to
 Streamable HTTP on `:8100`; `DXB_MCP_STDIO=1` switches to stdio instead, for
 attaching a desktop MCP client directly — off by default, since a server

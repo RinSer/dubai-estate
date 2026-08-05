@@ -39,7 +39,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -162,7 +162,89 @@ class DimArea(TimestampMixin, Base):
     geo_source_id: Mapped[int | None] = mapped_column(ForeignKey("dim_source.id"))
     geo_match_method: Mapped[str | None] = mapped_column(
         Text
-    )  # exact | parent_fallback | manual
+    )  # exact | parent_fallback | manual | name_hint
+
+    # NOTE on the area-code migration (docs/AREA_CODE_MIGRATION_ANALYSIS.md):
+    # DLD re-coded ~89 established communities starting 2026-07-20, and an old
+    # area can fan out into SEVERAL new ones (MARSA DUBAI alone split into 4
+    # disjoint communities) — a scalar pointer on this row cannot represent
+    # that, so there is deliberately none here. `AreaCodeEvidence` (the
+    # header, reviewed-gated) and `ProjectAreaActual` (the operational,
+    # project-level lookup) carry the relationship instead. Nothing on
+    # DimArea itself is ever rewritten by this mechanism.
+
+
+class AreaCodeEvidence(TimestampMixin, Base):
+    """Why the detector believes `old_area_id` was (partly) re-coded as
+    `new_area_id`, and everything that belonged to the old area at detection
+    time — old-area metadata, e.g. for a future map view of a superseded
+    area's contents. Not consulted by the resolution mechanism (see
+    `ProjectAreaActual`) except as the *fallback* for rows with no project to
+    anchor on, and only then when `old_area_id` has exactly one reviewed
+    successor — never a guess between several.
+
+    Purely additive audit data — inserted/updated by a non-fatal ELT pipeline
+    step. Nothing merges off an unreviewed row: `reviewed` gates
+    `ProjectAreaActual`'s apply step the same way `sample_tier` gates trust in
+    the buildings mart, not by deleting or hiding the detection, just by
+    refusing to act on it automatically.
+    """
+
+    __tablename__ = "area_code_evidence"
+
+    old_area_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("dim_area.id"), primary_key=True
+    )
+    new_area_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("dim_area.id"), primary_key=True
+    )
+    evidence_project_overlap_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    evidence_txn_count: Mapped[int] = mapped_column(Integer)
+    # Denormalized snapshot of the overlap project set at detection time —
+    # display/metadata only. The operational lookup is ProjectAreaActual,
+    # below, not this array.
+    evidence_project_ids: Mapped[list[int] | None] = mapped_column(ARRAY(Integer))
+    first_seen_new_code: Mapped[date | None] = mapped_column(Date)
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    reviewed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
+class ProjectAreaActual(TimestampMixin, Base):
+    """The operational old->new area lookup, at PROJECT grain.
+
+    Why project, not area: each new area code's transacted projects are
+    disjoint from every other new code's (measured directly — zero shared
+    projects across MARSA DUBAI's four successors), so a project resolves to
+    exactly one canonical area unambiguously, even when its OLD area does
+    not (44% of split old areas have more than one successor — an old-area
+    pointer cannot represent that, a project-level one does not need to).
+
+    One row per project — `project_id` is the primary key because a project
+    has exactly one current target, refreshable by upsert as the detector
+    re-runs. Populated by the same detector run that writes
+    `AreaCodeEvidence`. No `reviewed` flag of its own: trust flows from the
+    parent `AreaCodeEvidence` row for `(old_area_id, new_area_id)` — a row
+    here is only ever *applied* (used to backfill `DimProject.area_id`,
+    cascading to that project's buildings) once that pair is reviewed.
+    """
+
+    __tablename__ = "project_area_actual"
+
+    project_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("dim_project.id"), primary_key=True
+    )
+    old_area_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("dim_area.id"), nullable=False
+    )
+    new_area_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("dim_area.id"), nullable=False
+    )
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class DimDeveloper(TimestampMixin, Base):

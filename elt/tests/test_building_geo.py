@@ -63,8 +63,12 @@ def test_geocode_sets_only_validated_points(monkeypatch):
     monkeypatch.setattr(buildings, "MakaniClient", lambda *a, **k: client)
 
     rows = [
-        _row(id=1, name_en="A", area_name="AREA", area_id=101),  # inside
-        _row(id=2, name_en="B", area_name="AREA", area_id=102),  # outside
+        _row(
+            id=1, name_en="A", area_name="AREA", area_id=101, project_id=None
+        ),  # inside
+        _row(
+            id=2, name_en="B", area_name="AREA", area_id=102, project_id=None
+        ),  # outside
     ]
     session = _geocode_session(rows, {101: True, 102: False})
 
@@ -83,7 +87,9 @@ def test_geocode_counts_no_result(monkeypatch):
     client.find_place.return_value = []  # Makani knows nothing
     monkeypatch.setattr(buildings, "MakaniClient", lambda *a, **k: client)
 
-    session = _geocode_session([_row(id=1, name_en="A", area_name="X", area_id=1)], {})
+    session = _geocode_session(
+        [_row(id=1, name_en="A", area_name="X", area_id=1, project_id=None)], {}
+    )
     report = buildings.enrich_buildings(session)
     assert report["no_result"] == 1
     assert report["validated"] == 0
@@ -109,6 +115,46 @@ def test_geocode_full_sweep_filters_on_not_validated(monkeypatch):
     buildings.enrich_buildings(session, missing_only=False)
     sql = str(session.execute.call_args_list[0][0][0]).lower()
     assert "is distinct from 'makani_validated'" in sql
+
+
+def test_in_area_resolves_through_reviewed_project_actual_first(monkeypatch):
+    """docs/AREA_CODE_MIGRATION_ANALYSIS.md: containment must check a
+    reviewed project_area_actual mapping for the building's project first
+    (read-time indirection), then the project's own stored area, then the
+    old area's single unambiguous successor, before falling back to the
+    building's own raw area_id."""
+    _stub_source_id(monkeypatch)
+    session = MagicMock()
+    session.execute.return_value.scalar.return_value = True
+
+    buildings._in_area(session, area_id=20, lat=25.1, lng=55.2, project_id=30)
+
+    sql = str(session.execute.call_args[0][0]).lower()
+    assert "project_area_actual" in sql
+    assert "area_code_evidence" in sql
+    assert "dim_project" in sql
+    params = session.execute.call_args[0][1]
+    assert params["aid"] == 20  # the raw id is still passed through as-is
+    assert params["pid"] == 30
+
+
+def test_in_area_project_id_defaults_to_none():
+    """A project-less building still validates — the project tiers simply
+    resolve to nothing and containment falls through to the area tiers."""
+    session = MagicMock()
+    session.execute.return_value.scalar.return_value = True
+
+    buildings._in_area(session, area_id=20, lat=25.1, lng=55.2)
+
+    params = session.execute.call_args[0][1]
+    assert params["pid"] is None
+
+
+def test_project_agg_sql_also_resolves_through_project_actual_first():
+    """The building->project rollup's own in_area containment check must get
+    the same layered resolution as _in_area."""
+    assert "project_area_actual" in buildings._PROJECT_AGG_SQL
+    assert "area_code_evidence" in buildings._PROJECT_AGG_SQL
 
 
 def test_geocode_only_targets_fact_referenced_buildings(monkeypatch):

@@ -49,6 +49,19 @@ class _Repo(AnalyticsRepository):
         self.resolved.append((dimension, value))
         return (int(value) if value.isdigit() else 1), None
 
+    # Area-code migration helpers (AREA_CODE_MIGRATION_ANALYSIS.md) hit the
+    # session directly in the real repository; stubbed here as a no-op
+    # identity mapping (no area in this suite is ever superseded), which is
+    # exactly the "unaffected areas behave identically to before" case.
+    async def resolve_canonical_area_id(self, area_id):
+        return area_id
+
+    async def expand_area_ids(self, area_ids):
+        return list(area_ids)
+
+    async def superseded_predecessors(self, canonical_area_id):
+        return []
+
 
 class _Settings:
     default_min_sample = 20

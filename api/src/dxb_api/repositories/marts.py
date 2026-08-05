@@ -24,18 +24,18 @@ from dxb_api.repositories.base import BaseRepository
 
 
 def _apply_area_geo(
-    stmt: Select, has_geo_data: bool | None, geo_level: str | None
+    stmt: Select, area_col, has_geo_data: bool | None, geo_level: str | None
 ) -> Select:
     if geo_level == "polygon":
-        return stmt.where(DimArea.boundary.isnot(None))
+        return stmt.where(area_col.boundary.isnot(None))
     if geo_level == "point":
-        return stmt.where(DimArea.centroid.isnot(None))
+        return stmt.where(area_col.centroid.isnot(None))
     if has_geo_data is True:
         return stmt.where(
-            (DimArea.centroid.isnot(None)) | (DimArea.boundary.isnot(None))
+            (area_col.centroid.isnot(None)) | (area_col.boundary.isnot(None))
         )
     if has_geo_data is False:
-        return stmt.where(DimArea.centroid.is_(None), DimArea.boundary.is_(None))
+        return stmt.where(area_col.centroid.is_(None), area_col.boundary.is_(None))
     return stmt
 
 
@@ -58,25 +58,61 @@ class MartRepository(BaseRepository):
         limit, offset = self._bounded(limit, offset)
         m = MartAreaMonthly
 
-        stmt = select(
-            m.area_id.label("entity_id"),
-            DimArea.name_en.label("name_en"),
-            m.month,
-            m.usage,
-            m.sale_cnt,
-            m.sale_median_price_m2,
-            m.sale_p25_price_m2,
-            m.sale_p75_price_m2,
-            m.rent_cnt,
-            m.rent_median_annual_m2,
-            m.gross_yield_pct,
-        ).join(DimArea, DimArea.id == m.area_id)
+        # Every row is labeled and grouped under the CANONICAL area — a
+        # requested old code and its new code both resolve to the same
+        # entity_id/name_en here, via a self-join resolving each raw
+        # `dim_area.id` to its sole reviewed successor when unambiguous
+        # (AREA_CODE_MIGRATION_ANALYSIS.md). The filter, below, still runs
+        # against the mart's raw `area_id` column, widened to the full
+        # old+new set via `expand_area_ids` — which also raises if any
+        # requested id has 2+ reviewed successors, before this join is ever
+        # built for it.
+        #
+        # No `project_area_actual` join here, unlike facts.py/geo.py:
+        # `mart_area_monthly` is pre-aggregated past project grain (no
+        # `project_id` column survives the rebuild), so there is nothing at
+        # this row's own grain to join project-anchored resolution against.
+        # The mart's own `area_id` per row is already the ELT rebuild's
+        # project-first-resolved value (docs' "resolve through the project
+        # first" formula runs when the mart is built, not when it is read) —
+        # this self-join only adds the old-area-sole-successor fallback layer
+        # on top, for any residual that formula could not resolve.
+        canonical, canonical_join = self._canonical_area_alias()
 
-        stmt = _apply_area_geo(stmt, has_geo_data, geo_level)
+        stmt = (
+            select(
+                canonical.id.label("entity_id"),
+                canonical.name_en.label("name_en"),
+                m.month,
+                m.usage,
+                m.sale_cnt,
+                m.sale_median_price_m2,
+                m.sale_p25_price_m2,
+                m.sale_p75_price_m2,
+                m.rent_cnt,
+                m.rent_median_annual_m2,
+                m.gross_yield_pct,
+            )
+            .join(DimArea, DimArea.id == m.area_id)
+            .join(canonical, canonical_join)
+        )
+
+        expanded_ids = await self.expand_area_ids(area_ids) if area_ids else None
+        if not area_ids:
+            # No explicit id filter (listing every area): same reasoning as
+            # `AnalyticsRepository.ranking` — a 1-successor old area's row
+            # still naturally canonicalizes and merges above; only a
+            # 2+-successor old area's residual has nothing sensible to
+            # canonicalize to and must be excluded outright, not guessed.
+            # When `area_ids` IS given, `expand_area_ids` above already
+            # raised for any 2+-successor id in it, so this never applies.
+            stmt = self._exclude_ambiguous_old_areas(stmt)
+
+        stmt = _apply_area_geo(stmt, canonical, has_geo_data, geo_level)
         stmt = self._common_filters(
             stmt,
             m,
-            area_ids,
+            expanded_ids,
             m.area_id,
             usage,
             month_from,
@@ -84,10 +120,10 @@ class MartRepository(BaseRepository):
             min_sample,
             include_future,
         )
-        stmt = stmt.order_by(DimArea.name_en.asc(), m.month.asc(), m.usage.asc())
+        stmt = stmt.order_by(canonical.name_en.asc(), m.month.asc(), m.usage.asc())
 
         rows, has_more = await self._page(stmt, limit, offset)
-        return await self._envelope(
+        envelope = await self._envelope(
             rows,
             area_ids,
             limit,
@@ -96,8 +132,26 @@ class MartRepository(BaseRepository):
             min_sample,
             include_future,
             stmt=stmt,
-            id_col=m.area_id,
+            id_col=canonical.id,
         )
+        if area_ids:
+            # `_envelope`'s own with-data probe intersects requested_ids
+            # against canonical ids (since that's what the query now
+            # selects) — which under-reports a request for a superseded old
+            # code, since the old id itself never appears in a canonical
+            # with-data set. Re-derive the intersection via each requested
+            # id's own canonical instead, so an old-code request that
+            # resolved to data under its successor is correctly "returned",
+            # not "missing".
+            canon_of = await self._canonical_map(area_ids)
+            with_data_canonical = await self._ids_with_data(stmt, canonical.id)
+            envelope["returned_ids"] = sorted(
+                rid for rid in area_ids if canon_of.get(rid, rid) in with_data_canonical
+            )
+            envelope["missing_ids"] = sorted(
+                set(area_ids) - set(envelope["returned_ids"])
+            )
+        return envelope
 
     async def project_monthly(
         self,
@@ -216,7 +270,19 @@ class MartRepository(BaseRepository):
         if building_ids:
             stmt = stmt.where(m.building_id.in_(building_ids))
         if area_id is not None:
-            stmt = stmt.where(DimBuilding.area_id == area_id)
+            # Scope filter only (a building's own area_id/area_name_en stay
+            # as stored — dim_building.area_id is never rewritten by this
+            # mechanism); widened so either the old or the new code finds
+            # every building in the community, PLUS every building whose
+            # PROJECT resolves to this area via `project_area_actual`
+            # (reviewed) — same project-anchored augmentation as
+            # buildings_geojson/facts.py, needed for the same reason
+            # (AREA_CODE_MIGRATION_ANALYSIS.md).
+            stmt = stmt.where(
+                await self._area_scope_filter(
+                    DimBuilding.area_id, DimBuilding.project_id, area_id
+                )
+            )
         if usage:
             stmt = stmt.where(m.usage == usage)
         if min_sample:

@@ -153,6 +153,28 @@ def test_select_areas_full_sweep_filters_by_centroid_or_boundary_null():
     assert "dim_area.boundary IS NULL" in where_clause
 
 
+def test_select_areas_skips_superseded_areas_missing_only():
+    """docs/AREA_CODE_MIGRATION_ANALYSIS.md: no point spending throttled
+    Nominatim calls on a code that will never be canonical — applies
+    regardless of how many successors an old area has, unlike the
+    unambiguous-only rule used for data resolution."""
+    session = MagicMock()
+    enrich._select_areas(session, missing_only=True)
+    where_clause = str(session.scalars.call_args[0][0].whereclause)
+    assert "dim_area.id NOT IN" in where_clause
+    assert "area_code_evidence.old_area_id" in where_clause
+    assert "area_code_evidence.reviewed" in where_clause
+
+
+def test_select_areas_skips_superseded_areas_full_sweep():
+    session = MagicMock()
+    enrich._select_areas(session, missing_only=False)
+    where_clause = str(session.scalars.call_args[0][0].whereclause)
+    assert "dim_area.id NOT IN" in where_clause
+    assert "area_code_evidence.old_area_id" in where_clause
+    assert "area_code_evidence.reviewed" in where_clause
+
+
 # ------------------------------------------------- enrich_missing_areas hook
 
 

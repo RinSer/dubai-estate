@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from dxb_core.models import DimArea
+from dxb_core.models import AreaCodeEvidence, DimArea
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -34,6 +34,19 @@ def _select_areas(session: Session, missing_only: bool) -> list[DimArea]:
         stmt = select(DimArea).where(
             or_(DimArea.centroid.is_(None), DimArea.boundary.is_(None))
         )
+    # Skip old areas with a reviewed successor (docs/
+    # AREA_CODE_MIGRATION_ANALYSIS.md): once reviewed, an old area's own
+    # geometry is never consulted again — the API defers to its successor(s)
+    # instead. Applies regardless of how many successors it has (even a
+    # one-to-many split makes the old area's own geometry irrelevant) — no
+    # "unambiguous only" caveat here, unlike the data-resolution paths. No
+    # dim_area flag to check now (revision 2 dropped the scalar pointer), so
+    # this queries area_code_evidence directly. No point spending throttled
+    # (1 req/s) Nominatim calls on a code that will never be canonical.
+    reviewed_old_areas = select(AreaCodeEvidence.old_area_id).where(
+        AreaCodeEvidence.reviewed.is_(True)
+    )
+    stmt = stmt.where(DimArea.id.not_in(reviewed_old_areas))
     return list(session.scalars(stmt.order_by(DimArea.name_en)))
 
 

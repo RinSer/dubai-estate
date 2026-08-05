@@ -8,6 +8,7 @@ so the aggregation resolves precedence by date instead:
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -203,3 +204,68 @@ def test_rent_horizon_is_interpolated_from_the_shared_constant():
     """Interval literals cannot be bound, so this one is interpolated — assert
     it still tracks the constant rather than a hand-typed '2 years'."""
     assert f"'{constants.RENT_MAX_HORIZON_YEARS} years'" in marts._RENT_HORIZON_SQL
+
+
+# --------------------------------------------------- canonical area grouping
+#
+# docs/AREA_CODE_MIGRATION_ANALYSIS.md: a split community's old- and
+# new-coded sales/rents must fold into ONE mart row keyed on the canonical
+# (new) area_id — a redirect, never a union, so nothing is ever counted
+# under both its own area_id and the canonical one simultaneously.
+
+
+def test_area_mart_sql_groups_on_project_first_canonical_area():
+    """docs/AREA_CODE_MIGRATION_ANALYSIS.md 'One mechanism, used everywhere':
+    reviewed project_area_actual indirection first, then the project's own
+    stored area, then the old area's single unambiguous successor, then the
+    row's own area_id — never the raw fact.area_id directly."""
+    sql = marts._AREA_MART_SQL.lower()
+    pattern = (
+        r"coalesce\(\s*par\.new_area_id,\s*"
+        r"p\.area_id,\s*single_successor\.new_area_id,\s*f\.area_id\s*\)\s*as area_id"
+    )
+    assert re.search(pattern, sql) is not None
+    # appears once per subquery (sale, rent)
+    assert len(re.findall(pattern, sql)) == 2
+    # the raw fact column must not be the GROUP BY / SELECT list's area_id
+    assert "select f.area_id," not in sql
+
+
+def test_area_mart_sql_has_single_successor_and_project_actual_ctes():
+    sql = marts._AREA_MART_SQL.lower()
+    assert "with single_successor as" in sql
+    assert "project_actual_reviewed as" in sql
+    assert "having count(*) = 1" in sql
+    assert "join area_code_evidence ace" in sql
+    assert "where ace.reviewed" in sql
+
+
+def test_area_mart_sql_joins_project_and_project_actual_on_both_sides():
+    sql = marts._AREA_MART_SQL.lower()
+    assert sql.count("left join dim_project p on p.id = f.project_id") == 2
+    assert (
+        sql.count(
+            "left join project_actual_reviewed par on par.project_id = f.project_id"
+        )
+        == 2
+    )
+    assert (
+        sql.count(
+            "left join single_successor on single_successor.old_area_id = f.area_id"
+        )
+        == 2
+    )
+
+
+def test_project_mart_sql_is_unaffected_by_area_canonicalization():
+    """Only the area mart's grouping key changes — project/building marts
+    don't group by area at all and must be left alone."""
+    assert "dim_area" not in marts._PROJECT_MART_SQL.lower()
+    assert "superseded_by_area_id" not in marts._PROJECT_MART_SQL.lower()
+    assert "project_area_actual" not in marts._PROJECT_MART_SQL.lower()
+
+
+def test_building_mart_sql_is_unaffected_by_area_canonicalization():
+    assert "dim_area" not in marts._BUILDING_MART_SQL.lower()
+    assert "superseded_by_area_id" not in marts._BUILDING_MART_SQL.lower()
+    assert "project_area_actual" not in marts._BUILDING_MART_SQL.lower()

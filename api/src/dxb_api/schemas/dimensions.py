@@ -8,6 +8,15 @@ from pydantic import BaseModel, Field
 from dxb_api.schemas.common import GeoFlags
 
 
+class AreaLineageRef(BaseModel):
+    """A minimal pointer to another area, used for area-code migration
+    lineage (AREA_CODE_MIGRATION_ANALYSIS.md)."""
+
+    id: int
+    dld_area_code: str | None = None
+    name_en: str
+
+
 class Area(GeoFlags):
     """A DLD community/area — the primary unit of geographic analysis."""
 
@@ -22,6 +31,29 @@ class Area(GeoFlags):
             "How geometry was matched to this area: exact | parent_fallback | "
             "manual. parent_fallback means the shape belongs to a larger "
             "parent area, so it is approximate."
+        ),
+    )
+    superseded_areas: list[AreaLineageRef] = Field(
+        default_factory=list,
+        description=(
+            "Old DLD codes whose activity is now reported under this area, "
+            "because DLD re-coded the community (AREA_CODE_MIGRATION_"
+            "ANALYSIS.md). Empty for an area that was never split."
+        ),
+    )
+    superseded_by: list[AreaLineageRef] | None = Field(
+        None,
+        description=(
+            "Set only when this area itself is an old, superseded code: "
+            "every current area its activity may now be reported under — a "
+            "list because DLD subdivides, not renames, and an old area can "
+            "have several successors (21 of 48 split areas do). This area's "
+            "own id/name/code are still returned as-is — lookups by an old "
+            "code are never redirected, only annotated. When there is more "
+            "than one successor, this old area's own aggregated figures "
+            "(area-scoped facts/marts/analytics) are not resolvable to a "
+            "single canonical area and querying them raises an ambiguity "
+            "error naming this same list."
         ),
     )
 

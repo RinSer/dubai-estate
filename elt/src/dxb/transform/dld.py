@@ -27,6 +27,12 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from dxb.transform.area_resolve import (
+    canonical_area,
+    project_actual_reviewed_map,
+    project_area_map,
+    unambiguous_successor_map,
+)
 from dxb.transform.keys import txn_key_from_gateway
 
 log = logging.getLogger(__name__)
@@ -114,16 +120,55 @@ class DimCaches:
             )
             if num is not None
         }
-        # (name_en, area_id) -> building id. Distinct buildings are ~120k, so
-        # caching whole is fine and avoids a per-row SELECT on the hot path.
+        # Three resolution tiers (docs/AREA_CODE_MIGRATION_ANALYSIS.md "One
+        # mechanism, used everywhere" / "Schema (revised)"): (1) project_id
+        # -> new_area_id for reviewed project_area_actual rows — read-time
+        # indirection, never written by this mechanism; (2) project_id ->
+        # dim_project.area_id, exactly as stored; (3) old_area_id -> its
+        # single unambiguous reviewed successor. Together these resolve the
+        # canonical area key a building lookup should use, so a building
+        # historically stored under an old area code is still found (not
+        # duplicated) once its project's reviewed mapping — or raw area, or
+        # its own area's single successor — points elsewhere. See
+        # _canonical_area()/building() below.
+        self._project_actual: dict[int, int] = project_actual_reviewed_map(session)
+        self._project_area: dict[int, int | None] = project_area_map(session)
+        self._area_single_successor: dict[int, int] = unambiguous_successor_map(session)
+        # (name_en, canonical_area_id) -> building id. Distinct buildings are
+        # ~120k, so caching whole is fine and avoids a per-row SELECT on the
+        # hot path. Keyed on the CANONICAL area (not the raw stored area_id)
+        # so a building found under either an old or new area code for the
+        # same community resolves to the same row — see building() below.
         self.buildings: dict[tuple[str, int | None], int] = {
-            (name, area_id): id_
-            for name, area_id, id_ in session.execute(
-                select(DimBuilding.name_en, DimBuilding.area_id, DimBuilding.id)
+            (name, self._canonical_area(area_id, project_id)): id_
+            for name, area_id, project_id, id_ in session.execute(
+                select(
+                    DimBuilding.name_en,
+                    DimBuilding.area_id,
+                    DimBuilding.project_id,
+                    DimBuilding.id,
+                )
             )
         }
         # buildings whose project_id we've already backfilled this run.
         self._building_projects: dict[int, int] = {}
+
+    def _canonical_area(
+        self, area_id: int | None, project_id: int | None = None
+    ) -> int | None:
+        """Resolve the match-key area for a building lookup: prefer a
+        reviewed project_area_actual mapping for the row's project when one
+        exists; else the project's own stored area_id, untouched; else
+        redirect through the row's own area's single reviewed successor, if
+        unambiguous; else leave area_id unchanged (never guess between
+        several successors)."""
+        return canonical_area(
+            area_id,
+            project_id,
+            self._project_actual,
+            self._project_area,
+            self._area_single_successor,
+        )
 
     def area(self, name: str | None, name_ar: str | None = None) -> int | None:
         name = norm_name(name)
@@ -176,6 +221,10 @@ class DimCaches:
             self.session.add(project)
             self.session.flush()
             self.projects[key] = project.id
+            # Keep the project-first canonicalization tier in sync for a
+            # project created mid-run (e.g. by a later batch's building
+            # lookup) — otherwise it would key-miss the preloaded map.
+            self._project_area[project.id] = project.area_id
         return self.projects[key]
 
     def developer(
@@ -209,11 +258,19 @@ class DimCaches:
         Stubbed here from a transaction's building_name — location and physical
         attributes are filled later (Makani geocoding, CSV enrichment). Lazily
         backfills project_id if this row knows it and the stub did not.
+
+        The lookup/cache KEY canonicalizes area_id via the project-first rule
+        (docs/AREA_CODE_MIGRATION_ANALYSIS.md) so a building already stored
+        under an old area code is found and reused when the same building
+        name later shows up under its new canonical code — instead of
+        creating a second, duplicate row. This does NOT change what gets
+        stored in a genuinely NEW row's own area_id column: that still holds
+        whatever area_id the source actually reported.
         """
         name = norm_name(name)
         if not name:
             return None
-        key = (name, area_id)
+        key = (name, self._canonical_area(area_id, project_id))
         if key not in self.buildings:
             b = DimBuilding(
                 name_en=name,
@@ -343,6 +400,7 @@ def transform_projects(session: Session, caches: DimCaches, source_url: str) -> 
             project.source_url = source_url
             session.flush()
             caches.projects[(name, False)] = project.id
+            caches._project_area[project.id] = area_id
             n += 1
         _mark_processed(session, batch)
         session.commit()

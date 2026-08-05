@@ -27,6 +27,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from dxb.datadubai.sources import DATASETS, files_for
+from dxb.transform.area_resolve import (
+    canonical_area,
+    project_actual_reviewed_map,
+    project_area_map,
+    unambiguous_successor_map,
+)
 from dxb.transform.dld import norm_name, to_float, to_int, to_text
 
 log = logging.getLogger(__name__)
@@ -53,7 +59,28 @@ _UPDATE_COLS = (
 )
 
 
-def _row_values(row: dict, areas: dict, projects: dict) -> dict | None:
+def _row_values(
+    row: dict,
+    areas: dict,
+    projects: dict,
+    project_actual: dict[int, int] | None = None,
+    project_area: dict[int, int | None] | None = None,
+    single_successor: dict[int, int] | None = None,
+    existing: dict[tuple[str, int], int] | None = None,
+) -> dict | None:
+    """`project_actual`/`project_area`/`single_successor` (the same
+    three-tier resolution as transform.dld.DimCaches, docs/
+    AREA_CODE_MIGRATION_ANALYSIS.md) and `existing` ((name_en,
+    canonical_area_id) -> already-stored area_id) together redirect the
+    match key for buildings already registered under an old area code: if a
+    building with this name already exists under an area that canonicalizes
+    to the same place as this row's area (via its project's reviewed
+    mapping, its project's own stored area, or its area's single unambiguous
+    successor), the row is written with THAT already-stored area_id so the
+    `ux_building_name_area` upsert hits the existing row instead of creating
+    a duplicate. A genuinely new building keeps whatever area_id the CSV
+    actually reported.
+    """
     name = norm_name(row.get("building_number"))
     # '0' and blanks are placeholder codes, not buildings.
     if not name or name == "0":
@@ -61,12 +88,22 @@ def _row_values(row: dict, areas: dict, projects: dict) -> dict | None:
     area_id = areas.get(norm_name(row.get("area_name_en")))
     if area_id is None:
         return None
+    project_id = projects.get(norm_name(row.get("project_name_en")))
+    if existing:
+        canon_area_id = canonical_area(
+            area_id,
+            project_id,
+            project_actual or {},
+            project_area or {},
+            single_successor or {},
+        )
+        area_id = existing.get((name, canon_area_id), area_id)
     free = to_text(row.get("is_free_hold"))
     return {
         "name_en": name,
         "name_ar": None,
         "area_id": area_id,
-        "project_id": projects.get(norm_name(row.get("project_name_en"))),
+        "project_id": project_id,
         "built_up_area": to_float(row.get("built_up_area")),
         "floors": to_int(row.get("floors")),
         "flats": to_int(row.get("flats")),
@@ -108,6 +145,29 @@ def _flush(session: Session, batch: list[dict]) -> int:
     return n
 
 
+def _existing_building_areas(
+    session: Session,
+    project_actual: dict[int, int],
+    project_area: dict[int, int | None],
+    single_successor: dict[int, int],
+) -> dict[tuple[str, int], int]:
+    """(name_en, canonical_area_id) -> the area_id ALREADY stored for that
+    building. Lets a CSV row reporting a building's new (canonical) grouping
+    still resolve to the row already stored under its old, uncorrected
+    area_id — see `_row_values`."""
+    lookup: dict[tuple[str, int], int] = {}
+    for name, area_id, project_id in session.execute(
+        select(DimBuilding.name_en, DimBuilding.area_id, DimBuilding.project_id)
+    ):
+        if area_id is None:
+            continue
+        canon = canonical_area(
+            area_id, project_id, project_actual, project_area, single_successor
+        )
+        lookup.setdefault((name, canon), area_id)
+    return lookup
+
+
 def import_buildings(session: Session, source_url: str | None = None) -> dict:
     """Stream the buildings CSVs into dim_building attribute rows."""
     files = files_for(DATASETS["buildings"])
@@ -127,6 +187,12 @@ def import_buildings(session: Session, source_url: str | None = None) -> dict:
         )
         if not m
     }
+    project_actual = project_actual_reviewed_map(session)
+    project_area = project_area_map(session)
+    single_successor = unambiguous_successor_map(session)
+    existing = _existing_building_areas(
+        session, project_actual, project_area, single_successor
+    )
 
     report = {"read": 0, "written": 0, "skipped": 0, "files": []}
     for path in files:
@@ -135,7 +201,15 @@ def import_buildings(session: Session, source_url: str | None = None) -> dict:
         with open(Path(path), encoding="utf-8-sig", newline="") as fh:
             for row in csv.DictReader(fh):
                 read += 1
-                values = _row_values(row, areas, projects)
+                values = _row_values(
+                    row,
+                    areas,
+                    projects,
+                    project_actual,
+                    project_area,
+                    single_successor,
+                    existing,
+                )
                 if values is None:
                     skipped += 1
                     continue

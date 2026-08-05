@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from dxb.datadubai import buildings as bld
 
 
@@ -88,3 +90,155 @@ def test_dedupe_collapses_duplicate_conflict_keys_last_wins():
     assert len(out) == 2
     q1_area5 = next(r for r in out if r["area_id"] == 5)
     assert q1_area5["floors"] == 12
+
+
+# ----------------------------------------- area-code split match-key redirect
+#
+# docs/AREA_CODE_MIGRATION_ANALYSIS.md revision 2: a building already
+# registered under an OLD area code (or whose project's area has since
+# moved) must resolve to that same row (not a duplicate) when a later CSV
+# export reports the same building under its NEW, canonical code.
+
+
+def test_row_values_without_lookup_tables_is_unaffected_regression():
+    """No project_actual/project_area/single_successor/existing lookups
+    passed (or empty) -> raw area_id used as before, exactly like the
+    pre-migration behaviour."""
+    v = bld._row_values(_row(), _AREAS, _PROJECTS)
+    assert v["area_id"] == 55
+
+
+def test_row_values_redirects_via_reviewed_project_actual_first():
+    """A reviewed project_area_actual mapping for the row's project is
+    PRIMARY — checked ahead of the project's own (possibly stale) stored
+    area_id."""
+    project_actual = {700: 292}  # project 700's reviewed mapping -> 292
+    project_area = {700: 20}  # dim_project.area_id still says the OLD area
+    existing = {("LAKE TERRACE", 292): 20}  # already stored under OLD area_id 20
+    areas = {"AL THANYAH FIFTH": 20}  # this CSV export still reports the OLD area
+
+    v = bld._row_values(
+        _row(), areas, _PROJECTS, project_actual, project_area, {}, existing
+    )
+
+    assert v is not None
+    assert v["area_id"] == 20  # redirected to the already-stored row's area_id
+
+
+def test_row_values_falls_back_to_projects_own_stored_area():
+    """No reviewed project_area_actual mapping -> fall back to the
+    project's own dim_project.area_id, exactly as stored."""
+    project_area = {700: 292}  # project 700's own area_id is already 292
+    existing = {("LAKE TERRACE", 292): 20}  # already stored under OLD area_id 20
+    areas = {"AL THANYAH FIFTH": 20}  # this CSV export still reports the OLD area
+
+    v = bld._row_values(_row(), areas, _PROJECTS, {}, project_area, {}, existing)
+
+    assert v is not None
+    assert v["area_id"] == 20  # redirected to the already-stored row's area_id
+
+
+def test_row_values_redirects_via_unambiguous_old_area_successor():
+    """No project match -> fall back to the row's own area's single
+    unambiguous reviewed successor."""
+    single_successor = {20: 292}
+    existing = {("LAKE TERRACE", 292): 20}
+    areas = {"AL THANYAH FIFTH": 20}
+
+    v = bld._row_values(
+        _row(project_name_en="Ghost Project"),  # no project match
+        areas,
+        _PROJECTS,
+        {},
+        {},
+        single_successor,
+        existing,
+    )
+
+    assert v["area_id"] == 20
+
+
+def test_row_values_new_building_keeps_reported_area_id():
+    """No existing match under the canonical area -> genuinely new building,
+    stored with whatever area_id the CSV actually reported."""
+    project_area = {700: 292}
+    existing: dict = {}  # nothing registered yet
+    areas = {"AL THANYAH FIFTH": 20}
+
+    v = bld._row_values(_row(), areas, _PROJECTS, {}, project_area, {}, existing)
+
+    assert v["area_id"] == 20  # raw, as reported — not rewritten
+
+
+def test_row_values_ambiguous_old_area_without_project_uses_raw_area_id():
+    """An old area with no single unambiguous successor (zero or several)
+    has no safe redirect for a project-less row — must never guess."""
+    existing = {("LAKE TERRACE", 292): 20}
+    areas = {"AL THANYAH FIFTH": 20}
+
+    v = bld._row_values(
+        _row(project_name_en="Ghost Project"),
+        areas,
+        _PROJECTS,
+        {},
+        {},
+        {},  # no unambiguous successor for area 20
+        existing,
+    )
+
+    assert v["area_id"] == 20  # unredirected, own raw area_id
+
+
+def test_row_values_unsplit_area_is_unaffected():
+    """Regression: an area with no split has no project/successor redirect,
+    so lookups behave exactly as before."""
+    existing = {("LAKE TERRACE", 55): 55}
+
+    v = bld._row_values(_row(), _AREAS, _PROJECTS, {}, {}, {}, existing)
+
+    assert v["area_id"] == 55
+
+
+def test_existing_building_areas_prefers_reviewed_project_actual():
+    session = MagicMock()
+    session.execute.return_value = [
+        ("PRINCESS TOWER", 20, 700),  # project 700 reviewed-mapped to 292
+        ("LAKE TERRACE", 55, None),  # no project -> raw area, no successor
+    ]
+    project_actual = {700: 292}
+    project_area: dict = {700: 20}  # stale, must be ignored since tier 1 wins
+    single_successor: dict = {}
+
+    lookup = bld._existing_building_areas(
+        session, project_actual, project_area, single_successor
+    )
+
+    assert lookup == {("PRINCESS TOWER", 292): 20, ("LAKE TERRACE", 55): 55}
+
+
+def test_existing_building_areas_falls_back_to_projects_own_area():
+    session = MagicMock()
+    session.execute.return_value = [("PRINCESS TOWER", 20, 700)]
+    project_actual: dict = {}  # not (yet) reviewed
+    project_area = {700: 292}
+    single_successor: dict = {}
+
+    lookup = bld._existing_building_areas(
+        session, project_actual, project_area, single_successor
+    )
+
+    assert lookup == {("PRINCESS TOWER", 292): 20}
+
+
+def test_existing_building_areas_falls_back_to_unambiguous_successor():
+    session = MagicMock()
+    session.execute.return_value = [("TORCH TOWER", 20, None)]
+    project_actual: dict = {}
+    project_area: dict = {}
+    single_successor = {20: 292}
+
+    lookup = bld._existing_building_areas(
+        session, project_actual, project_area, single_successor
+    )
+
+    assert lookup == {("TORCH TOWER", 292): 20}

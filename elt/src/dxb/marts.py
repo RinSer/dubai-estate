@@ -88,6 +88,29 @@ def _precedence(
 
 
 _AREA_MART_SQL = """
+WITH single_successor AS (
+    -- old_area_id -> its ONE reviewed successor, only when unambiguous
+    -- (docs/AREA_CODE_MIGRATION_ANALYSIS.md: 21 of 48 split old areas have
+    -- SEVERAL successors and must never be guessed between — such old areas
+    -- simply have no row here, so the outer COALESCE below falls through to
+    -- the row's own area_id for them).
+    SELECT old_area_id, max(new_area_id) AS new_area_id
+    FROM area_code_evidence
+    WHERE reviewed
+    GROUP BY old_area_id
+    HAVING count(*) = 1
+),
+project_actual_reviewed AS (
+    -- project_id -> new_area_id, for project_area_actual rows whose pair is
+    -- reviewed=true — the PRIMARY resolution tier. Read-time indirection
+    -- only: project_area_actual/dim_project are never written by this
+    -- mechanism (docs/AREA_CODE_MIGRATION_ANALYSIS.md "Schema (revised)").
+    SELECT pam.project_id, pam.new_area_id
+    FROM project_area_actual pam
+    JOIN area_code_evidence ace
+      ON ace.old_area_id = pam.old_area_id AND ace.new_area_id = pam.new_area_id
+    WHERE ace.reviewed
+)
 INSERT INTO mart_area_monthly (
     area_id, month, usage, sale_cnt, sale_median_price_m2, sale_p25_price_m2,
     sale_p75_price_m2, rent_cnt, rent_median_annual_m2, gross_yield_pct
@@ -102,7 +125,21 @@ SELECT
     r.med,
     round((r.med / nullif(s.med, 0) * 100)::numeric, 2)
 FROM (
-    SELECT f.area_id,
+    -- Project-first canonical area (docs/AREA_CODE_MIGRATION_ANALYSIS.md
+    -- "One mechanism, used everywhere"): a reviewed project_area_actual
+    -- mapping for the sale's own PROJECT is primary; else the project's own
+    -- stored area_id (dim_project.area_id, exactly as reported, never
+    -- rewritten); else a project-less row's own area's single unambiguous
+    -- successor; else the row's own area_id, unchanged, as the last resort.
+    -- A redirect, never a union — exactly one canonical id per row, so
+    -- nothing is ever counted under both its own area_id and the canonical
+    -- one.
+    SELECT coalesce(
+               par.new_area_id,
+               p.area_id,
+               single_successor.new_area_id,
+               f.area_id
+           ) AS area_id,
            date_trunc('month', f.txn_date)::date AS month,
            coalesce(pt.usage, 'Unknown') AS usage,
            count(*)::int AS cnt,
@@ -113,6 +150,9 @@ FROM (
            round((percentile_cont(0.75)
                   WITHIN GROUP (ORDER BY f.price_per_m2))::numeric, 2) AS p75
     FROM fact_sale_transaction f
+    LEFT JOIN dim_project p ON p.id = f.project_id
+    LEFT JOIN project_actual_reviewed par ON par.project_id = f.project_id
+    LEFT JOIN single_successor ON single_successor.old_area_id = f.area_id
     LEFT JOIN dim_property_type pt ON pt.id = f.property_type_id
     WHERE f.txn_group = :txn_group
       AND f.price_per_m2 BETWEEN :price_min AND :price_max
@@ -120,13 +160,23 @@ FROM (
     GROUP BY 1, 2, 3
 ) s
 FULL OUTER JOIN (
-    SELECT f.area_id,
+    -- Same project-first rule, unconditionally (per direction — rents get no
+    -- special case even though Ejari hasn't adopted the new codes yet).
+    SELECT coalesce(
+               par.new_area_id,
+               p.area_id,
+               single_successor.new_area_id,
+               f.area_id
+           ) AS area_id,
            date_trunc('month', f.start_date)::date AS month,
            coalesce(pt.usage, 'Unknown') AS usage,
            count(*)::int AS cnt,
            round((percentile_cont(0.5)
                   WITHIN GROUP (ORDER BY f.rent_per_m2_year))::numeric, 2) AS med
     FROM fact_rent_contract f
+    LEFT JOIN dim_project p ON p.id = f.project_id
+    LEFT JOIN project_actual_reviewed par ON par.project_id = f.project_id
+    LEFT JOIN single_successor ON single_successor.old_area_id = f.area_id
     LEFT JOIN dim_property_type pt ON pt.id = f.property_type_id
     WHERE f.rent_per_m2_year BETWEEN :rent_min AND :rent_max
       AND f.start_date IS NOT NULL

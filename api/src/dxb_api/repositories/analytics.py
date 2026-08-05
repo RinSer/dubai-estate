@@ -72,39 +72,82 @@ class AnalyticsRepository(BaseRepository):
         has_geo_data: bool | None,
         geo_level: str | None,
     ) -> dict[int, dict]:
-        """Monthly points per entity, keyed by id, with the entity name."""
+        """Monthly points per entity, keyed by id, with the entity name.
+
+        For `entity="area"`, `entity_id`/`name_en` are always the CANONICAL
+        area (AREA_CODE_MIGRATION_ANALYSIS.md): the query self-joins
+        `dim_area` a second time, resolving each raw row's `area_id` to its
+        sole reviewed successor when unambiguous, so an old-code mart row and
+        its new-code successor's row fold into the *same* bucket
+        automatically. Combined with the `ids is None` exclusion below, that
+        is what keeps a superseded area from ever surfacing as its own entity
+        in `ranking` while still reflecting its combined activity for a
+        specific requested id in `growth`/`compare` — each mart row is read
+        and counted exactly once, never unioned twice. `ids`, below, still
+        filters the mart's raw `area_id` column, so callers pass the
+        *expanded* (old+new) id set, not just the canonical one, to actually
+        pick up an old code's rows.
+
+        No `project_area_actual` join here (unlike facts.py/geo.py): the mart
+        is pre-aggregated past project grain, so there is no `project_id` at
+        this row's own grain to resolve through — that resolution already ran
+        when the mart was built. This self-join only adds the old-area-sole-
+        successor fallback on top, for any residual left after that.
+        """
         if entity == "area":
-            m, dim, id_col = MartAreaMonthly, DimArea, MartAreaMonthly.area_id
+            m = MartAreaMonthly
+            id_col = m.area_id
+            canonical, canonical_join = self._canonical_area_alias()
+            stmt = (
+                select(
+                    canonical.id.label("entity_id"),
+                    canonical.name_en.label("name_en"),
+                    m.month,
+                    m.sale_median_price_m2,
+                    m.sale_cnt,
+                    m.rent_median_annual_m2,
+                    m.rent_cnt,
+                )
+                .join(DimArea, DimArea.id == id_col)
+                .join(canonical, canonical_join)
+            )
+            if ids is None:
+                # Ranking considers every area with no id filter. A
+                # 1-successor old area's row should still canonicalize and
+                # merge into its successor's bucket normally (that's what the
+                # self-join above already does) — only a 2+-successor old
+                # area needs excluding outright, since there is nothing
+                # sensible to canonicalize its residual to (belt-and-
+                # suspenders: the ELT-side mart rebuild should already leave
+                # it with no coherent bucket to rank in the first place).
+                stmt = self._exclude_ambiguous_old_areas(stmt)
+            if geo_level == "polygon":
+                stmt = stmt.where(canonical.boundary.isnot(None))
+            elif geo_level == "point":
+                stmt = stmt.where(canonical.centroid.isnot(None))
+            elif has_geo_data is True:
+                stmt = stmt.where(
+                    (canonical.centroid.isnot(None)) | (canonical.boundary.isnot(None))
+                )
         else:
             m, dim, id_col = (
                 MartProjectMonthly,
                 DimProject,
                 MartProjectMonthly.project_id,
             )
-
-        stmt = select(
-            id_col.label("entity_id"),
-            dim.name_en,
-            m.month,
-            m.sale_median_price_m2,
-            m.sale_cnt,
-            m.rent_median_annual_m2,
-            m.rent_cnt,
-        ).join(dim, dim.id == id_col)
-
-        if entity == "area":
-            if geo_level == "polygon":
-                stmt = stmt.where(DimArea.boundary.isnot(None))
-            elif geo_level == "point":
-                stmt = stmt.where(DimArea.centroid.isnot(None))
-            elif has_geo_data is True:
-                stmt = stmt.where(
-                    (DimArea.centroid.isnot(None)) | (DimArea.boundary.isnot(None))
-                )
-        elif geo_level == "point" or has_geo_data is True:
-            stmt = stmt.where(DimProject.location.isnot(None))
-        elif geo_level == "polygon":
-            stmt = stmt.where(DimProject.id.is_(None))
+            stmt = select(
+                id_col.label("entity_id"),
+                dim.name_en,
+                m.month,
+                m.sale_median_price_m2,
+                m.sale_cnt,
+                m.rent_median_annual_m2,
+                m.rent_cnt,
+            ).join(dim, dim.id == id_col)
+            if geo_level == "point" or has_geo_data is True:
+                stmt = stmt.where(DimProject.location.isnot(None))
+            elif geo_level == "polygon":
+                stmt = stmt.where(DimProject.id.is_(None))
 
         if ids:
             stmt = stmt.where(id_col.in_(ids))
@@ -148,6 +191,27 @@ class AnalyticsRepository(BaseRepository):
                 )
             )
         return out
+
+    async def _area_merge_caveat(self, canonical_area_id: int) -> str | None:
+        """One caveat line naming the old code(s) folded into
+        `canonical_area_id`'s figures, or None when the area was never split.
+
+        Shared by `growth` and `compare` so a client always sees *why* a
+        canonical area's numbers differ from what querying its old code
+        alone used to show (AREA_CODE_MIGRATION_ANALYSIS.md).
+        """
+        predecessors = await self.superseded_predecessors(canonical_area_id)
+        if not predecessors:
+            return None
+        named = ", ".join(
+            f"{p['dld_area_code'] or p['id']} ({p['name_en']})" for p in predecessors
+        )
+        return (
+            "DLD reissued this area's code. Activity previously recorded "
+            f"under old code(s) {named} is folded into these figures, "
+            "counted once, not added on top "
+            "(AREA_CODE_MIGRATION_ANALYSIS.md)."
+        )
 
     # ------------------------------------------------- building summaries
 
@@ -375,9 +439,22 @@ class AnalyticsRepository(BaseRepository):
         min_sample = (
             self._settings.default_min_sample if min_sample is None else min_sample
         )
+
+        # Area-code migration redirect (AREA_CODE_MIGRATION_ANALYSIS.md): a
+        # request for an old code resolves to its canonical id, and the mart
+        # rows fetched span both the old and new codes, so the numbers
+        # reflect their combined activity — never both counted separately.
+        lookup_id = entity_id
+        merge_caveat = None
+        ids_filter = [entity_id]
+        if entity == "area":
+            lookup_id = await self.resolve_canonical_area_id(entity_id)
+            ids_filter = await self.expand_area_ids([entity_id])
+            merge_caveat = await self._area_merge_caveat(lookup_id)
+
         series = await self._series(
             entity=entity,
-            ids=[entity_id],
+            ids=ids_filter,
             usage=usage,
             month_from=month_from,
             month_to=month_to,
@@ -385,18 +462,21 @@ class AnalyticsRepository(BaseRepository):
             has_geo_data=None,
             geo_level=None,
         )
-        bucket = series.get(entity_id)
+        bucket = series.get(lookup_id)
         if bucket is None:
             return {
                 "entity": entity,
-                "id": entity_id,
+                "id": lookup_id,
                 "name_en": None,
                 "series": [],
                 "yoy": [],
                 "consecutive_yoy_increases": 0,
                 "resolved_entity": resolved,
                 "applied": {"min_sample": min_sample, "usage": usage},
-                **caveats.block(["No mart rows matched these filters."]),
+                **caveats.block(
+                    ["No mart rows matched these filters."]
+                    + ([merge_caveat] if merge_caveat else [])
+                ),
             }
 
         points = bucket["points"]
@@ -421,7 +501,7 @@ class AnalyticsRepository(BaseRepository):
             "consecutive_yoy_increases": metrics.consecutive_yoy_increases(steps),
             "resolved_entity": resolved,
             "applied": {"min_sample": min_sample, "usage": usage},
-            **caveats.block(),
+            **caveats.block([merge_caveat] if merge_caveat else None),
         }
 
     # ------------------------------------------------------------ yield
@@ -531,6 +611,10 @@ class AnalyticsRepository(BaseRepository):
                 )
 
         extra = []
+        merge_caveats = sorted(
+            {g.pop("_merge_caveat") for g in groups if "_merge_caveat" in g}
+        )
+        extra.extend(merge_caveats)
         kinds = {g.get("entity_type") for g in groups if g.get("entity_type")}
         if "building" in kinds:
             extra.append(BUILDING_NO_INCOME)
@@ -627,9 +711,23 @@ class AnalyticsRepository(BaseRepository):
             }
 
         entity_id, resolved = await self._resolve_named(kind, spec)
+
+        # Area-code migration redirect (AREA_CODE_MIGRATION_ANALYSIS.md):
+        # same treatment as `growth` — resolve to canonical, widen the mart
+        # filter to old+new, and surface why the numbers merged via a
+        # caveat rather than silently. `_merge_caveat` is popped back out by
+        # `compare` before the group is returned to the client.
+        lookup_id = entity_id
+        merge_caveat = None
+        ids_filter = [entity_id]
+        if kind == "area":
+            lookup_id = await self.resolve_canonical_area_id(entity_id)
+            ids_filter = await self.expand_area_ids([entity_id])
+            merge_caveat = await self._area_merge_caveat(lookup_id)
+
         series = await self._series(
             entity=kind,
-            ids=[entity_id],
+            ids=ids_filter,
             usage=None,
             month_from=month_from,
             month_to=month_to,
@@ -637,15 +735,18 @@ class AnalyticsRepository(BaseRepository):
             has_geo_data=None,
             geo_level=None,
         )
-        bucket = series.get(entity_id, {"name_en": None, "points": []})
-        return {
+        bucket = series.get(lookup_id, {"name_en": None, "points": []})
+        group = {
             "value": label,
             "entity_type": kind,
-            "id": entity_id,
+            "id": lookup_id,
             "name_en": bucket.get("name_en"),
             "resolved_entity": resolved,
             **metrics.summarize(bucket["points"]),
         }
+        if merge_caveat:
+            group["_merge_caveat"] = merge_caveat
+        return group
 
     async def _resolve_named(
         self, dimension: str, value: str

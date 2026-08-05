@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dxb_core.models import DimArea, DimBuilding, DimProject
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from dxb_api.errors import NotFoundError
 from dxb_api.repositories.base import BaseRepository
@@ -53,7 +53,21 @@ class BuildingRepository(BaseRepository):
         limit, offset = self._bounded(limit, offset)
         stmt = self._base()
         if area_id is not None:
-            stmt = stmt.where(DimBuilding.area_id == area_id)
+            # `dim_building.area_id` is NEVER rewritten by this mechanism —
+            # OR'd with the read-time `project_area_actual` indirection
+            # (through the building's own `project_id`) rather than replacing
+            # the literal match, exactly like `list_projects`. Querying an
+            # OLD id still returns exactly its own literal, historical
+            # snapshot: the subquery is simply empty for an old id. Never
+            # ambiguous — a building resolves to at most one project, which
+            # resolves to exactly one place by construction
+            # (AREA_CODE_MIGRATION_ANALYSIS.md).
+            stmt = stmt.where(
+                or_(
+                    DimBuilding.area_id == area_id,
+                    DimBuilding.project_id.in_(self._project_area_actual_subq(area_id)),
+                )
+            )
         if project_id is not None:
             stmt = stmt.where(DimBuilding.project_id == project_id)
         if has_geo_data is True:

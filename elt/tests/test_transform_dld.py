@@ -398,3 +398,192 @@ def test_upsert_facts_respects_real_bind_param_limit():
         chunk_rows = insert_value_rows(call[0][0])
         assert chunk_rows
         assert len(chunk_rows) * n_cols <= 65535  # Postgres's hard limit
+
+
+# --------------------------------------------------------- DimCaches.building
+#
+# docs/AREA_CODE_MIGRATION_ANALYSIS.md revision 2: an old area can fan out
+# into SEVERAL new ones, so resolution is anchored on the PROJECT, not a
+# scalar area pointer. project_area_actual is READ-TIME INDIRECTION — never
+# written by this mechanism — checked first; the project's own stored
+# area_id is the next tier; a building already stored under the OLD area
+# code (or whose project's reviewed mapping/own area has since moved) must
+# still be found — not duplicated.
+
+
+class _FakeResult:
+    """Mimics the one `sqlalchemy.engine.Result` trait that actually bit
+    production: `Result` exposes `.keys()` (column names), so `dict(result)`
+    — as opposed to iterating (col1, col2) row pairs — treats it as a mapping
+    and dies with a confusing `TypeError: not subscriptable`, never a clean
+    dict. `project_actual_reviewed_map` did exactly this and a plain list
+    return here would never have caught it: a live `dxb run-once` did
+    (2026-08-05), after this whole area-code-migration suite was green.
+    Consuming code must iterate row pairs, same as every other query here."""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def keys(self):
+        return ("col1", "col2")
+
+
+class _CachesSession:
+    """Minimal in-order session stand-in for constructing a real DimCaches.
+
+    Each DimCaches.__init__ SELECT is answered from a queue, in the exact
+    order __init__ issues them: areas, ptypes, projects, developers,
+    project-actual-reviewed map, project-area map, area-single-successor
+    map, buildings. add()/flush() assign sequential ids like autoflush
+    would, so building()'s new-row-creation path is exercised for real, not
+    just its cache-hit path.
+    """
+
+    def __init__(
+        self,
+        *,
+        areas=(),
+        ptypes=(),
+        projects=(),
+        developers=(),
+        project_actual=(),
+        project_area=(),
+        area_single_successor=(),
+        buildings=(),
+    ):
+        self._queue = [
+            list(areas),
+            list(ptypes),
+            list(projects),
+            list(developers),
+            list(project_actual),
+            list(project_area),
+            list(area_single_successor),
+            list(buildings),
+        ]
+        self.added: list = []
+        self._next_id = 1000
+
+    def execute(self, stmt):
+        return _FakeResult(self._queue.pop(0))
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    def flush(self):
+        for obj in self.added:
+            if getattr(obj, "id", None) is None:
+                obj.id = self._next_id
+                self._next_id += 1
+
+    def get(self, model, pk):
+        for obj in self.added:
+            if getattr(obj, "id", None) == pk:
+                return obj
+        return None
+
+
+def test_building_resolves_via_reviewed_project_actual_first():
+    """A reviewed project_area_actual mapping for the building's project is
+    the PRIMARY tier — read-time indirection, checked ahead of the
+    project's own (possibly stale) stored area_id."""
+    session = _CachesSession(
+        project_actual=[(30, 292)],  # project 30's reviewed mapping -> 292
+        project_area=[(30, 20)],  # dim_project.area_id still says the OLD area
+        buildings=[("PRINCESS TOWER", 292, 30, 555)],
+    )
+    caches = tr.DimCaches(session)
+
+    result = caches.building("Princess Tower", area_id=20, project_id=30)
+
+    assert result == 555
+    assert session.added == []  # no duplicate row created
+
+
+def test_building_falls_back_to_projects_own_stored_area_when_not_reviewed():
+    """No reviewed project_area_actual mapping -> fall back to the
+    project's own dim_project.area_id, exactly as stored (never rewritten
+    by this mechanism)."""
+    session = _CachesSession(
+        project_area=[(30, 292)],  # project 30's own area_id happens to be 292
+        buildings=[("PRINCESS TOWER", 292, 30, 555)],
+    )
+    caches = tr.DimCaches(session)
+
+    result = caches.building("Princess Tower", area_id=20, project_id=30)
+
+    assert result == 555
+    assert session.added == []  # no duplicate row created
+
+
+def test_building_new_row_stores_the_reported_area_id_not_canonical():
+    """A genuinely new building keeps whatever area_id the source reported
+    in its own area_id column — only the MATCH key is canonicalized, per
+    the analysis doc's explicit instruction not to rewrite stored data."""
+    session = _CachesSession(project_area=[(30, 292)])
+    caches = tr.DimCaches(session)
+
+    result = caches.building("New Tower", area_id=20, project_id=30)
+
+    assert result == 1000
+    assert len(session.added) == 1
+    assert session.added[0].area_id == 20  # raw, as reported — not 292
+    assert caches.buildings[("NEW TOWER", 292)] == 1000  # cached at canonical key
+
+
+def test_building_second_lookup_under_either_project_area_reuses_same_row():
+    session = _CachesSession(project_area=[(30, 292)])
+    caches = tr.DimCaches(session)
+
+    first = caches.building("Torch Tower", area_id=20, project_id=30)
+    second = caches.building("Torch Tower", area_id=292, project_id=30)
+
+    assert first == second
+    assert len(session.added) == 1  # only ever created once
+
+
+def test_building_falls_back_to_unambiguous_old_area_successor_without_project():
+    """No project_id known -> fall back to the row's own area's SINGLE
+    reviewed successor, same 2-hop redirect as revision 1 for the
+    unambiguous case."""
+    session = _CachesSession(
+        area_single_successor=[(20, 292)],
+        buildings=[("PRINCESS TOWER", 292, None, 555)],
+    )
+    caches = tr.DimCaches(session)
+
+    result = caches.building("Princess Tower", area_id=20)
+
+    assert result == 555
+    assert session.added == []
+
+
+def test_building_no_project_and_ambiguous_old_area_uses_raw_area_id():
+    """An old area with SEVERAL reviewed successors (not exactly one) has no
+    safe redirect for a project-less row — must never guess between them,
+    the row's own area_id is used unchanged. MARSA DUBAI-style: old area 20
+    split into 4 successors here reduced to 2 for the test."""
+    session = _CachesSession(
+        area_single_successor=[(20, 292), (20, 318)],  # 2 successors, ambiguous
+    )
+    caches = tr.DimCaches(session)
+
+    result = caches.building("Some Building", area_id=20)
+
+    assert result == 1000
+    assert caches.buildings[("SOME BUILDING", 20)] == 1000  # raw area, unredirected
+
+
+def test_building_unsplit_area_behaves_exactly_as_before():
+    """Regression: an area with no split has no single-successor entry, so
+    lookups are unaffected."""
+    session = _CachesSession(
+        buildings=[("LAKE TERRACE", 10, None, 42)],
+    )
+    caches = tr.DimCaches(session)
+
+    assert caches.building("Lake Terrace", area_id=10) == 42
+    assert session.added == []
