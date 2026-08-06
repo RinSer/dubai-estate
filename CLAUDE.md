@@ -42,6 +42,15 @@ Three Python packages, deliberately separated:
 | `packages/dxb-core/` | Shared SQLAlchemy **table definitions only** | n/a — execution-agnostic |
 | `elt/` | Data collection & loading (writes) | **strictly synchronous** |
 | `api/` | Read-only FastAPI analytics service | **strictly async / asyncio** |
+| `mcp/` | MCP tool surface over the REST API | async; owns no SQL |
+| `copilot/` | LLM agent over the MCP tools | async; owns no SQL |
+| `ui/` | React + TypeScript SPA | its own container, `ui/Dockerfile` — Node builds it, `nginx-unprivileged` serves the static output; needs no env vars or secrets at runtime, so the same image is right for local `docker compose up` and a later cloud deploy |
+
+**Only `elt/` and `api/` touch the database.** `mcp/`, `copilot/` and `ui/`
+deliberately depend on neither `dxb-core` nor each other's internals — they
+talk over HTTP. That is what keeps "the API is the only thing that reads the
+database" true even with an LLM in the loop: the copilot's sole route to data
+is the MCP server's curated tools (docs/UI_PLAN.md §5).
 
 **This split is a hard rule, not a preference:**
 
@@ -114,10 +123,22 @@ ELT and an `AsyncSession` in the API. See docs/API_DESIGN.md §7b.
    sequence in `elt/alembic/versions/` (`0001`, `0002`, `0003`, ...). Never
    hand-edit the live schema without a migration backing it.
 
-6. **Both packages must be green**, not just the one you touched:
-   `uv run pytest -q` from `elt/` (175 tests) *and* from `api/` (76). The
-   `packages/dxb-core` schema is shared, so an ELT model change can break the
-   API silently — the API has no migrations of its own to catch it.
+6. **Every affected package must be green**, not just the one you touched:
+   `uv run pytest -q` from `elt/`, `api/`, `mcp/` and `copilot/`, and
+   `npx vitest run` from `ui/`. The `packages/dxb-core` schema is shared, so an
+   ELT model change can break the API silently — the API has no migrations of
+   its own to catch it.
+
+7. **In `ui/`, both commands must pass**, and they catch different things:
+   `npx vitest run` (behaviour) and `npm run typecheck` (types — `vitest run`
+   does *not* typecheck). Then `npm run build` before shipping.
+
+   **Do not use bare `npx tsc --noEmit` here — it silently checks nothing.**
+   `ui/tsconfig.json` is a solution-style file (`"files": []` plus project
+   references), so `tsc --noEmit` type-checks an empty program and exits 0 no
+   matter how broken the code is. This was verified by planting a deliberate
+   type error and watching it pass. Only `tsc -b`, which is what
+   `npm run typecheck` and `npm run build` run, walks the referenced projects.
 
 ## Conventions worth knowing before you're surprised by them
 
@@ -128,6 +149,43 @@ ELT and an `AsyncSession` in the API. See docs/API_DESIGN.md §7b.
 - **Argon2 hashes contain `$`, which Docker Compose interpolates** when it
   loads `.env`. Every `$` in `DXB_API_USERS` must be doubled to `$$` there or
   login fails with a confusing "malformed hash". `.env.example` says so.
+- **`wget`-based healthchecks on an Alpine image must target `127.0.0.1`, never
+  `localhost`.** Alpine's musl resolves `localhost` to `::1` first
+  (`getent hosts localhost` proves it), and if the server only binds IPv4 —
+  true of nginx here, `listen 80;` is `0.0.0.0:80` only — busybox `wget`
+  doesn't fall back to the next address on connection refused the way `curl`
+  does. The server is up and correctly serving traffic the whole time; only
+  its own probe fails. This is why the edge `nginx` service showed
+  `unhealthy` in `docker compose ps` for a long stretch of this project
+  despite working fine — root-caused and fixed by reproducing the exact
+  healthcheck command by hand (`docker exec <container> wget ...`) rather
+  than guessing. `curl`-based healthchecks (`api`, `mcp`, `copilot`) don't
+  have this problem — curl retries the next resolved address itself.
+- **A Worker MapLibre constructs internally is invisible to Vite, and nginx
+  doesn't know `.mjs` either — both bit for real, stacked.** MapLibre decodes
+  tiles off the main thread via a Worker built from a relative runtime path
+  that is neither a static import nor a bundler-analyzable
+  `new Worker(new URL(...))`, so Vite never includes the file; the request
+  fell through to the SPA's own `index.html`, and the browser correctly
+  refused to run HTML as a JS module — silent hang, no tiles, no loud error.
+  Fixed by copying `maplibre-gl-worker.mjs` **and its own sibling import**
+  `maplibre-gl-shared.mjs` (hardcoded as `./maplibre-gl-shared.mjs` inside the
+  worker's own source, so both must sit together under their original
+  filenames) into `ui/public/`, done live in `vite.config.ts` from whatever
+  `maplibre-gl` version is actually installed — never a manual static copy,
+  which would silently drift out of sync on the next `npm update` and
+  reintroduce this exact bug months later, confusingly. `MapView.tsx` points
+  MapLibre at the result via `setWorkerUrl()`, its own supported escape hatch.
+  Then, after that fix: nginx's stock `mime.types` maps `.js` but has **no
+  entry for `.mjs`**, so it served the now-present file with `default_type`
+  (`application/octet-stream`) — the identical "wrong MIME type" browser
+  failure, from a completely different cause, through the real container
+  chain, that `vite preview` never surfaces because Vite's own static server
+  knows `.mjs`. Fixed with an explicit `types { application/javascript mjs; }`
+  in `ui/nginx.conf`. **The lesson, not just the fix:** verify the actual
+  bytes and headers a build produces once they're behind the real serving
+  stack (`curl -I` the specific file), not just that the build step exited
+  0 — two separate, real defects here each passed a clean `npm run build`.
 - **Provenance is load-bearing, not decorative.** Every fact row carries
   `source_id` / `source_url` / `source_ref`; every `dim_source` row has an
   `is_government` flag so queries can filter to verified government data

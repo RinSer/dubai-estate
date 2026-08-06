@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 145">
+  <title>Burj Khalifa silhouette</title>
+  <g fill="#F0665A" stroke="#8A2E26" stroke-width="0.6" stroke-linejoin="round">
+    <path d="M5,127 L25,120 L55,124 L35,133 Z" />
+    <path d="M18,135 L42,131 L54,134 L30,138 Z" />
+    <path d="M14,125 L14,102 L17,102 L17,84 L20,84 L20,66 L23,66 L23,52 L26,60 L26,125 Z" />
+    <path d="M46,125 L46,95 L43,95 L43,74 L40,74 L40,54 L37,54 L37,38 L34,46 L34,125 Z" />
+    <path
+      d="M26,125 L26,100 L27,100 L27,72 L27.7,72 L27.7,48 L28.4,48 L28.4,30 L29,30 L29,8
+         L30,4 L31,8 L31,30 L31.6,30 L31.6,48 L32.3,48 L32.3,72 L33,72 L33,100 L34,100 L34,125 Z"
+    />
+  </g>
+</svg>
