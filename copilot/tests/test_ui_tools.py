@@ -19,8 +19,8 @@ from dxb_copilot.ui_tools import (
 
 
 def test_tool_is_named_and_schema_is_closed():
-    assert SET_VIEW_STATE["name"] in UI_TOOL_NAMES
-    schema = SET_VIEW_STATE["input_schema"]
+    assert SET_VIEW_STATE.name in UI_TOOL_NAMES
+    schema = SET_VIEW_STATE.schema
     # additionalProperties=False so a model inventing a field gets a validation
     # error from the SDK rather than having it silently ignored.
     assert schema["additionalProperties"] is False
@@ -66,8 +66,44 @@ def test_empty_patch_is_rejected():
 def test_unknown_top_level_key_is_rejected():
     # Refused rather than filtered: a model asking for something we do not
     # support should be told so, not silently given a no-op.
-    with pytest.raises(PatchRejected, match="Unknown top-level keys"):
+    with pytest.raises(PatchRejected, match="Additional properties"):
         extract_patch({"view": "map", "database": {"drop": True}})
+
+
+def test_unknown_nested_key_is_rejected_too():
+    # additionalProperties: False applies at every level of the schema, not
+    # just the top — a hand-rolled top-level-only check (the previous
+    # implementation) would have let this straight through.
+    with pytest.raises(PatchRejected, match="Additional properties"):
+        extract_patch({"view": "dashboard", "dashboard": {"bogusField": 1}})
+
+
+def test_invalid_enum_value_is_rejected_with_the_field_path():
+    # The exact failure reported live: a model (a local Ollama model, less
+    # reliable about respecting a schema's enum than Anthropic/OpenAI's
+    # function calling) sent a dashboard.metric value outside
+    # DASHBOARD_METRICS. This must be caught here, server-side, with enough
+    # detail for the model to correct itself — not silently accepted and
+    # only rejected later by the client's own zod validation, by which
+    # point the turn has already ended and the model has no chance to retry.
+    with pytest.raises(PatchRejected, match=r"dashboard\.metric"):
+        extract_patch(
+            {"view": "dashboard", "dashboard": {"metric": "not_a_real_metric"}}
+        )
+
+
+def test_valid_enum_values_across_all_three_views_pass(monkeypatch):
+    # The success side of the same check — every documented enum value must
+    # keep working, not just get rejected less.
+    for tool_input in (
+        {
+            "view": "dashboard",
+            "dashboard": {"metric": "gross_yield_pct", "transform": "yoy_pct"},
+        },
+        {"view": "map", "map": {"granularity": "buildings", "encoding": "height"}},
+        {"view": "listing", "listing": {"entity": "rents"}},
+    ):
+        extract_patch(tool_input)  # must not raise
 
 
 def test_non_object_input_is_rejected():
@@ -78,8 +114,8 @@ def test_non_object_input_is_rejected():
 def test_schema_documents_the_required_fact_filters():
     # Transactions and rents 422 without a scoping filter. If the model does
     # not know that, its first patch reliably produces a broken table.
-    described = SET_VIEW_STATE["input_schema"]["properties"]["listing"]["properties"][
-        "filters"
-    ]["description"]
+    described = SET_VIEW_STATE.schema["properties"]["listing"]["properties"]["filters"][
+        "description"
+    ]
     assert "date_from" in described
     assert "start_date_from" in described

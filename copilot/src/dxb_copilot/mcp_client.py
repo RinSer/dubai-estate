@@ -28,6 +28,8 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 
+from .providers.base import ToolSchema
+
 log = logging.getLogger(__name__)
 
 
@@ -59,23 +61,25 @@ async def mcp_session(url: str, api_key: str, timeout_seconds: float):
                 yield session
 
 
-def to_anthropic_tools(mcp_tools: list[Any]) -> list[dict[str, Any]]:
-    """Convert MCP tool descriptors into Anthropic tool-use definitions.
+def to_tool_schemas(mcp_tools: list[Any]) -> list[ToolSchema]:
+    """Convert MCP tool descriptors into the canonical `ToolSchema` shape
+    every provider understands (providers/base.py).
 
-    The two formats agree on the essentials (name, description, JSON Schema),
-    so this is a rename rather than a translation — `inputSchema` becomes
-    `input_schema`. Descriptions are passed through untouched: they are written
+    Provider-neutral by construction, not just in name: JSON Schema is what
+    MCP already gives us (`inputSchema`) and what every provider's own
+    tool-definition format wraps, so this is a rename/reshape rather than a
+    translation. Descriptions are passed through untouched: they are written
     for a model and are the main thing steering correct tool choice.
     """
-    out: list[dict[str, Any]] = []
+    out: list[ToolSchema] = []
     for t in mcp_tools:
         schema = getattr(t, "inputSchema", None) or {"type": "object", "properties": {}}
         out.append(
-            {
-                "name": t.name,
-                "description": (getattr(t, "description", "") or "").strip(),
-                "input_schema": schema,
-            }
+            ToolSchema(
+                name=t.name,
+                description=(getattr(t, "description", "") or "").strip(),
+                schema=schema,
+            )
         )
     return out
 

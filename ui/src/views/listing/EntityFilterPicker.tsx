@@ -43,7 +43,7 @@ function EntityCombo({
   onClear,
 }: {
   fieldLabel: string;
-  // Field (ui/components.tsx) renders help as plain text, not markup.
+  // Field (ui/components.tsx) renders help as a hover/focus tooltip, plain text only.
   help?: string;
   placeholder: string;
   value: number | undefined;

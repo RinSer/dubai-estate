@@ -33,8 +33,9 @@
     Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 
-  --r: 6px;
+  --r: 8px;
   --shadow: 0 1px 2px rgba(17, 23, 25, 0.06), 0 4px 12px rgba(17, 23, 25, 0.04);
+  --transition: 130ms ease;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -105,7 +106,13 @@ body {
 }
 
 .topbar {
-  display: flex;
+  /* Three columns rather than a flex row with a spacer: a spacer only
+     centers the tabs relative to the space left over after the brand and
+     actions, which drifts off-center the moment those two differ in width.
+     The middle "auto" column here sits exactly centered on the full header
+     regardless of how wide the brand or the action buttons are. */
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 16px;
   padding: 0 16px;
@@ -115,11 +122,27 @@ body {
   border-bottom: 1px solid var(--edge);
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: end;
+}
+
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 700;
   letter-spacing: -0.02em;
   font-size: 15px;
   white-space: nowrap;
+}
+
+.brand-logo {
+  height: 26px;
+  width: auto;
+  flex: none;
 }
 
 .brand span {
@@ -142,6 +165,7 @@ body {
   padding: 6px 12px;
   border-radius: var(--r);
   cursor: pointer;
+  transition: background-color var(--transition), color var(--transition);
 }
 
 .tab:hover {
@@ -183,6 +207,7 @@ body {
   padding: 6px 12px;
   cursor: pointer;
   white-space: nowrap;
+  transition: background-color var(--transition), border-color var(--transition), color var(--transition);
 }
 
 .btn:hover:not(:disabled) {
@@ -261,6 +286,13 @@ textarea {
   border-radius: var(--r);
   padding: 5px 8px;
   min-width: 0;
+  transition: border-color var(--transition);
+}
+
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: var(--ink-faint);
 }
 
 input[type="checkbox"] {
@@ -276,7 +308,13 @@ input[type="checkbox"] {
   min-width: 0;
 }
 
-.field > label {
+.field-label-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.field-label-row label {
   font-size: 10.5px;
   font-weight: 700;
   letter-spacing: 0.07em;
@@ -285,9 +323,56 @@ input[type="checkbox"] {
   font-family: var(--mono);
 }
 
-.field .help {
-  font-size: 11.5px;
+/* A field's caveat text as a small hover/focus tooltip instead of an inline
+   line under the input — so a field's height never depends on whether it has
+   help, which used to knock rows of fields out of alignment (theme.css). */
+.help-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--sunk);
+  border: 1px solid var(--edge-strong);
   color: var(--ink-faint);
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1;
+  cursor: help;
+}
+
+.help-icon:hover,
+.help-icon:focus-visible {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.help-icon:hover::after,
+.help-icon:focus-visible::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 220px;
+  padding: 7px 9px;
+  border-radius: var(--r);
+  background: var(--ink);
+  color: var(--ground);
+  font: 500 11.5px/1.4 var(--sans);
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+  box-shadow: var(--shadow);
+  pointer-events: none;
 }
 
 /* -------------------------------------------------------------- panels */
@@ -423,7 +508,7 @@ table.data td.empty {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   padding: 2px 6px;
-  border-radius: 3px;
+  border-radius: 5px;
   background: var(--sunk);
   color: var(--ink-soft);
   border: 1px solid var(--edge-strong);

@@ -110,6 +110,22 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <span className="brand">
+          <svg className="brand-logo" viewBox="0 0 200 132" aria-hidden="true">
+            <g fill="none" stroke="#ffffff" strokeWidth="4" strokeLinejoin="round" strokeLinecap="round">
+              {/* Same skyline as public/favicon.svg. White + bold on request —
+                  needs a dark topbar background to actually read; see .topbar. */}
+              <path
+                d="M5,126 L9,68 L16,50 C21,62 28,80 29,102 C28,116 26,122 23,126
+                   L46,126 L46,90 L49,90 L49,80 L55,80 L61,68 L61,80 L64,80 L64,126
+                   L84,126 L84,99 L87,99 L87,81 L90,81 L90,65 L93,65 L93,51 L96,51 L96,25
+                   L98,25 L98,3 L100,2 L102,8 L102,30 L104,30 L104,56 L107,56 L107,70
+                   L110,70 L110,86 L113,86 L113,104 L116,104 L116,126
+                   L134,126 L134,62 L144,48 L156,62 L156,126
+                   L168,126 L168,78 L172,78 L178,60 L184,78 L190,78 L190,126"
+              />
+              <path d="M17,52 L20,54 L24,32 Z" />
+            </g>
+          </svg>
           Dubai estate <span>analytics</span>
         </span>
         <nav className="tabs">
@@ -125,18 +141,19 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <span className="spacer" />
-        <button
-          className="btn subtle sm"
-          onClick={undo}
-          disabled={!past}
-          title="Undo — works the same for your changes and the copilot's"
-        >
-          Undo
-        </button>
-        <button className="btn subtle sm" onClick={redo} disabled={!future}>
-          Redo
-        </button>
+        <div className="topbar-actions">
+          <button
+            className="btn subtle sm"
+            onClick={undo}
+            disabled={!past}
+            title="Undo — works the same for your changes and the copilot's"
+          >
+            Undo
+          </button>
+          <button className="btn subtle sm" onClick={redo} disabled={!future}>
+            Redo
+          </button>
+        </div>
       </header>
 
       <main className={`viewport${view === "map" ? " flush" : ""}`}>

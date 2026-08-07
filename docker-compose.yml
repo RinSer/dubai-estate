@@ -117,6 +117,15 @@ services:
       # forwarding — see Settings.root_path for why this needs to be told to
       # FastAPI too, not just to nginx (mirrors DXB_API_ROOT_PATH on api).
       DXB_COPILOT_ROOT_PATH: /copilot
+      # Only read when DXB_COPILOT_PROVIDER=ollama (config.py). Docker
+      # Desktop resolves host.docker.internal without extra_hosts below, but
+      # the explicit mapping is the portable form for Linux Docker Engine —
+      # this repo has been bitten before by exactly this class of
+      # environment-specific Docker networking gap (see the wget/musl/
+      # localhost healthcheck story elsewhere in CLAUDE.md).
+      DXB_COPILOT_OLLAMA_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       mcp:
         condition: service_healthy

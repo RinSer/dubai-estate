@@ -17,10 +17,10 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
-from anthropic import AsyncAnthropic
-
 from .config import Settings
-from .mcp_client import flatten_tool_result, mcp_session, to_anthropic_tools
+from .mcp_client import flatten_tool_result, mcp_session, to_tool_schemas
+from .providers import ProviderError, Turn, get_provider
+from .providers.base import ToolResult
 from .ui_tools import UI_TOOL_NAMES, UI_TOOLS, PatchRejected, extract_patch
 
 log = logging.getLogger(__name__)
@@ -80,18 +80,6 @@ class Event:
     data: dict[str, Any]
 
 
-def _tool_use_blocks(message: Any) -> list[Any]:
-    return [b for b in message.content if getattr(b, "type", None) == "tool_use"]
-
-
-def _text_of(message: Any) -> str:
-    return "".join(
-        getattr(b, "text", "")
-        for b in message.content
-        if getattr(b, "type", None) == "text"
-    )
-
-
 async def run_chat(
     *,
     settings: Settings,
@@ -105,21 +93,22 @@ async def run_chat(
             "error",
             {
                 "message": (
-                    "The copilot is not configured: ANTHROPIC_API_KEY is unset. "
-                    "Set it in .env and restart the copilot service."
+                    f"The copilot is not configured: {settings.missing_credential_hint}"
+                    f" is unset for provider {settings.provider!r}. Set it in .env "
+                    "and restart."
                 )
             },
         )
         return
 
-    client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+    provider = get_provider(settings)
 
     try:
         async with mcp_session(
             settings.mcp_url, settings.mcp_api_key, settings.mcp_timeout_seconds
         ) as session:
             listed = await session.list_tools()
-            tools = to_anthropic_tools(listed.tools) + UI_TOOLS
+            tools = to_tool_schemas(listed.tools) + UI_TOOLS
 
             # What the user is currently looking at, so "add Dubai Marina to
             # this chart" is answerable. Sent as a system-role addendum rather
@@ -133,34 +122,37 @@ async def run_chat(
                     f"scratch:\n{json.dumps(view_state, separators=(',', ':'))}"
                 )
 
-            convo = list(messages)
+            history: list[Turn] = [
+                Turn(role=m["role"], text=m["content"]) for m in messages
+            ]
 
-            for turn in range(settings.max_turns):
-                response = await client.messages.create(
-                    model=settings.model,
-                    max_tokens=settings.max_tokens,
-                    system=system,
-                    tools=tools,
-                    messages=convo,
+            for _ in range(settings.max_turns):
+                result = await provider.complete(
+                    system=system, tools=tools, history=history
                 )
 
-                text = _text_of(response)
-                if text:
-                    yield Event("text", {"text": text})
+                if result.text:
+                    yield Event("text", {"text": result.text})
 
-                tool_uses = _tool_use_blocks(response)
-                if not tool_uses:
-                    yield Event("done", {"stop_reason": response.stop_reason})
+                if not result.tool_calls:
+                    yield Event("done", {"stop_reason": result.stop_reason})
                     return
 
-                convo.append({"role": "assistant", "content": response.content})
-                results: list[dict[str, Any]] = []
+                history.append(
+                    Turn(
+                        role="assistant",
+                        text=result.text or None,
+                        tool_calls=result.tool_calls,
+                        provider_extra=result.provider_extra,
+                    )
+                )
+                tool_results: list[ToolResult] = []
 
-                for block in tool_uses:
-                    if block.name in UI_TOOL_NAMES:
+                for call in result.tool_calls:
+                    if call.name in UI_TOOL_NAMES:
                         result_text = ""
                         try:
-                            patch, explanation = extract_patch(dict(block.input))
+                            patch, explanation = extract_patch(call.input)
                         except PatchRejected as exc:
                             # Tell the model why, so it can correct itself —
                             # a silent failure produces a confident claim that
@@ -175,33 +167,29 @@ async def run_chat(
                                 "Patch sent to the interface. The user can see the "
                                 "change and can undo it."
                             )
-                        results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": result_text,
-                            }
+                        tool_results.append(
+                            ToolResult(
+                                tool_call_id=call.id,
+                                name=call.name,
+                                content=result_text,
+                            )
                         )
                         continue
 
-                    yield Event(
-                        "tool", {"name": block.name, "input": dict(block.input)}
-                    )
+                    yield Event("tool", {"name": call.name, "input": call.input})
                     try:
-                        raw = await session.call_tool(block.name, dict(block.input))
+                        raw = await session.call_tool(call.name, call.input)
                         content = flatten_tool_result(raw)
                     except Exception as exc:  # noqa: BLE001 - surfaced to the model
-                        log.exception("MCP tool %s failed", block.name)
+                        log.exception("MCP tool %s failed", call.name)
                         content = f"TOOL ERROR: {exc}"
-                    results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": content,
-                        }
+                    tool_results.append(
+                        ToolResult(
+                            tool_call_id=call.id, name=call.name, content=content
+                        )
                     )
 
-                convo.append({"role": "user", "content": results})
+                history.append(Turn(role="tool_results", tool_results=tool_results))
 
             # Ran out of turns. Say so rather than presenting whatever partial
             # state we happen to be in as a finished answer.
@@ -214,6 +202,10 @@ async def run_chat(
                     )
                 },
             )
+    except ProviderError as exc:
+        # A condition the model can't do anything about (e.g. Ollama's
+        # capability check) — show it to the user directly, no retry framing.
+        yield Event("error", {"message": str(exc)})
     except Exception as exc:  # noqa: BLE001 - last line before the transport
         log.exception("copilot turn failed")
         yield Event("error", {"message": f"Copilot failed: {exc}"})

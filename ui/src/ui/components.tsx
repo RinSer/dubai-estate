@@ -92,6 +92,15 @@ export function useCollapse(defaultOpen = true): [boolean, () => void] {
   return [open, () => setOpen((v) => !v)];
 }
 
+/**
+ * A field's caveat text used to render as a line below the input — correct,
+ * but it meant two fields side by side in the same row went out of vertical
+ * alignment the moment only one of them had help text, since row height
+ * followed whichever field's text happened to wrap. `help` is now a small
+ * info glyph next to the label with a CSS-only hover/focus tooltip
+ * (`.help-icon`, theme.css), so a field's height never depends on whether it
+ * has help at all.
+ */
 export function Field({
   label,
   help,
@@ -103,9 +112,15 @@ export function Field({
 }) {
   return (
     <div className="field">
-      <label>{label}</label>
+      <span className="field-label-row">
+        <label>{label}</label>
+        {help ? (
+          <span className="help-icon" tabIndex={0} data-tooltip={help} aria-label={help}>
+            i
+          </span>
+        ) : null}
+      </span>
       {children}
-      {help ? <span className="help">{help}</span> : null}
     </div>
   );
 }

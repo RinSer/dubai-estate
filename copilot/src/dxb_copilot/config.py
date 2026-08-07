@@ -14,6 +14,21 @@ from functools import lru_cache
 
 log = logging.getLogger(__name__)
 
+_KNOWN_PROVIDERS = ("anthropic", "openai", "ollama")
+# A hardcoded Anthropic model name is meaningless once another provider is
+# selected — each provider gets its own sane default, still overridable by
+# DXB_COPILOT_MODEL for any of them.
+_DEFAULT_MODEL = {
+    "anthropic": "claude-sonnet-5",
+    "openai": "gpt-4.1",
+    "ollama": "glm-5.2:cloud",
+}
+_CREDENTIAL_ENV_VAR = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "ollama": "DXB_COPILOT_OLLAMA_URL",
+}
+
 
 def _get(name: str, default: str) -> str:
     v = os.environ.get(name, "").strip()
@@ -57,14 +72,26 @@ class Settings:
     # rather than by giving this service a second copy of the signing secret.
     api_url: str
 
-    # --- Anthropic ---
-    anthropic_api_key: str
+    # --- model provider ---
+    #
+    # One of "anthropic" | "openai" | "ollama" (providers/__init__.py's
+    # get_provider() dispatches on this). Validated and normalized in
+    # build_settings() — by the time it reaches anywhere else in this
+    # service, it is guaranteed to be one of those three values.
+    provider: str
     model: str
     max_tokens: int
     # A hard ceiling on tool-calling round trips. Without it a confused model
     # can loop on a failing tool until the request times out or the bill grows;
     # with it the user gets a partial answer and an explanation instead.
     max_turns: int
+
+    # Only the field(s) relevant to the selected provider are ever read
+    # (Settings.configured, providers/__init__.get_provider) — all three are
+    # always present so switching DXB_COPILOT_PROVIDER needs no other change.
+    anthropic_api_key: str
+    openai_api_key: str
+    ollama_url: str
 
     # --- transport ---
     host: str
@@ -94,13 +121,32 @@ class Settings:
 
     @property
     def configured(self) -> bool:
-        """False when the service cannot possibly answer — no model key.
+        """False when the service cannot possibly answer with the selected provider.
 
         Checked at request time rather than refused at startup so the container
         still boots, still serves /health, and returns one clear explanation to
         the user instead of a crash loop that looks like a broken deployment.
+
+        Anthropic and OpenAI need their vendor API key; Ollama has no key
+        concept at all — reachability, not credentials, is what "configured"
+        means there, and ollama_url always has a default, so this is
+        effectively always true for that provider (a genuinely unreachable
+        host still surfaces as a clear per-request error, just later, at the
+        first /chat call rather than here).
         """
-        return bool(self.anthropic_api_key)
+        if self.provider == "anthropic":
+            return bool(self.anthropic_api_key)
+        if self.provider == "openai":
+            return bool(self.openai_api_key)
+        if self.provider == "ollama":
+            return bool(self.ollama_url)
+        return False  # unreachable — provider is validated in build_settings()
+
+    @property
+    def missing_credential_hint(self) -> str:
+        """The one env var to set for the selected provider, for the
+        not-configured error message (agent.py)."""
+        return _CREDENTIAL_ENV_VAR.get(self.provider, "DXB_COPILOT_PROVIDER")
 
 
 @lru_cache
@@ -126,12 +172,39 @@ def build_settings() -> Settings:
             "one key is configured."
         )
 
-    anthropic_api_key = _get("ANTHROPIC_API_KEY", "")
-    if not anthropic_api_key:
+    # Validated and normalized HERE, once — build_settings() runs at
+    # container import time (server.py's module-level `app = create_app()`),
+    # so anything downstream (get_provider(), the _DEFAULT_MODEL lookup two
+    # lines down) can assume `provider` is always one of the three known
+    # values without risking a KeyError crash-looping the container over a
+    # typo'd env var. Same fail-soft philosophy as the missing-credential
+    # warning below: log it, fall back, keep booting.
+    provider = _get("DXB_COPILOT_PROVIDER", "anthropic").lower()
+    if provider not in _KNOWN_PROVIDERS:
         log.warning(
-            "ANTHROPIC_API_KEY is not set — the copilot will boot and serve "
-            "/health, but every chat request will return a configuration "
-            "error explaining what is missing. See copilot/README.md."
+            "DXB_COPILOT_PROVIDER=%r is not one of %s — falling back to 'anthropic'.",
+            provider,
+            _KNOWN_PROVIDERS,
+        )
+        provider = "anthropic"
+
+    anthropic_api_key = _get("ANTHROPIC_API_KEY", "")
+    openai_api_key = _get("OPENAI_API_KEY", "")
+    ollama_url = _get("DXB_COPILOT_OLLAMA_URL", "http://host.docker.internal:11434")
+
+    selected_credential = {
+        "anthropic": anthropic_api_key,
+        "openai": openai_api_key,
+        "ollama": ollama_url,
+    }[provider]
+    if not selected_credential:
+        log.warning(
+            "%s is not set for the selected provider (%s) — the copilot will "
+            "boot and serve /health, but every chat request will return a "
+            "configuration error explaining what is missing. See "
+            "copilot/README.md.",
+            _CREDENTIAL_ENV_VAR[provider],
+            provider,
         )
 
     return Settings(
@@ -139,10 +212,13 @@ def build_settings() -> Settings:
         api_url=_get("DXB_COPILOT_API_URL", "http://api:8000").rstrip("/"),
         mcp_api_key=_get("DXB_MCP_CLIENT_API_KEY", ""),
         mcp_timeout_seconds=float(_get("DXB_COPILOT_MCP_TIMEOUT", "60")),
-        anthropic_api_key=anthropic_api_key,
-        model=_get("DXB_COPILOT_MODEL", "claude-sonnet-5"),
+        provider=provider,
+        model=_get("DXB_COPILOT_MODEL", _DEFAULT_MODEL.get(provider, "")),
         max_tokens=int(_get("DXB_COPILOT_MAX_TOKENS", "4096")),
         max_turns=int(_get("DXB_COPILOT_MAX_TURNS", "8")),
+        anthropic_api_key=anthropic_api_key,
+        openai_api_key=openai_api_key,
+        ollama_url=ollama_url,
         host=_get("DXB_COPILOT_HOST", "0.0.0.0"),
         port=int(_get("DXB_COPILOT_PORT", "8200")),
         root_path=_get("DXB_COPILOT_ROOT_PATH", ""),

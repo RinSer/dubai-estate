@@ -24,6 +24,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import jsonschema
+
+from .providers.base import ToolSchema
+
 LISTING_ENTITIES = ["transactions", "rents", "buildings", "projects", "areas"]
 DASHBOARD_METRICS = [
     "sale_median_price_m2",
@@ -123,9 +127,9 @@ _MAP_PATCH = {
     "additionalProperties": False,
 }
 
-SET_VIEW_STATE = {
-    "name": "set_view_state",
-    "description": (
+SET_VIEW_STATE = ToolSchema(
+    name="set_view_state",
+    description=(
         "Reconfigure the user interface to illustrate your answer. Send only "
         "the fields you want to change — everything else is left alone.\n\n"
         "Use this when showing beats telling: after ranking areas, plot them; "
@@ -137,7 +141,7 @@ SET_VIEW_STATE = {
         "prefer being helpful over being cautious — but never use it to hide "
         "an inconvenient result."
     ),
-    "input_schema": {
+    schema={
         "type": "object",
         "properties": {
             "view": {
@@ -158,10 +162,10 @@ SET_VIEW_STATE = {
         },
         "additionalProperties": False,
     },
-}
+)
 
-UI_TOOLS: list[dict[str, Any]] = [SET_VIEW_STATE]
-UI_TOOL_NAMES = {t["name"] for t in UI_TOOLS}
+UI_TOOLS: list[ToolSchema] = [SET_VIEW_STATE]
+UI_TOOL_NAMES = {t.name for t in UI_TOOLS}
 
 
 class PatchRejected(ValueError):
@@ -174,18 +178,37 @@ def extract_patch(tool_input: dict[str, Any]) -> tuple[dict[str, Any], str | Non
     `explanation` is prose for the user and must not reach the reducer — it is
     not part of ViewState, and a strict client validator rejects the whole
     patch if it arrives with unknown keys.
+
+    Validated here against the exact same schema declared to the model
+    (`SET_VIEW_STATE.schema`) — every field type, enum, and
+    `additionalProperties: False` constraint, at every nesting level, not
+    just the top one. This used to be a much shallower hand-rolled check
+    (top-level key names only), which meant a bad value anywhere below the
+    top level — e.g. an invented `dashboard.metric` — sailed straight
+    through: the model was told "Patch sent to the interface" as if it had
+    succeeded, and only the *client's* own zod validation ever caught it,
+    by which point the turn had already ended with no way to tell the model
+    to retry. Anthropic's and OpenAI's function calling mostly (not always)
+    honors a schema's enum constraints on its own; local models served
+    through Ollama are considerably less reliable about it, which is why
+    this went unnoticed until a local-model chat actually exercised it.
+    Validating the identical schema server-side, rather than duplicating
+    the enum lists in a second hand-written check, is what keeps this from
+    drifting out of sync with what the model was actually told.
     """
     if not isinstance(tool_input, dict):
         raise PatchRejected("Tool input must be an object")
+
+    try:
+        jsonschema.validate(instance=tool_input, schema=SET_VIEW_STATE.schema)
+    except jsonschema.ValidationError as exc:
+        path = ".".join(str(p) for p in exc.path) or "<root>"
+        raise PatchRejected(f"Invalid value at {path}: {exc.message}") from exc
 
     explanation = tool_input.get("explanation")
     patch = {k: v for k, v in tool_input.items() if k != "explanation"}
 
     if not patch:
         raise PatchRejected("Patch is empty — nothing to change")
-
-    unknown = set(patch) - {"view", "listing", "dashboard", "map"}
-    if unknown:
-        raise PatchRejected(f"Unknown top-level keys: {', '.join(sorted(unknown))}")
 
     return patch, explanation if isinstance(explanation, str) else None

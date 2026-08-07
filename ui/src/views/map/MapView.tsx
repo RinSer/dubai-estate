@@ -197,6 +197,14 @@ export function MapView() {
       zoom: initial.zoom,
       pitch: initial.pitch,
       bearing: initial.bearing,
+      // MapLibre's WebGL context defaults to no MSAA, which leaves every
+      // polygon edge — and especially the height encoding's fill-extrusion
+      // blocks — with hard, jagged pixel steps ("looks like Minecraft").
+      // This is the fix, not a paint-property tweak: it's a rasterizer
+      // setting, not something any layer's paint spec controls. This
+      // installed version (v6) nests it under canvasContextAttributes rather
+      // than a top-level `antialias` (verified against maplibre-gl.d.ts).
+      canvasContextAttributes: { antialias: true },
     });
     mapRef.current = m;
 
